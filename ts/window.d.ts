@@ -184,6 +184,8 @@ declare global {
     Events: IPCEventsType;
     MessageCache: MessageCache;
     Whisper: WhisperType;
+    // Letta fork integration service (see ts/services/letta.preload.ts).
+    lettaService?: typeof import('./services/letta.preload.ts').lettaService;
     // Note: used in background.html, and not type-checked
     startApp: () => void;
 

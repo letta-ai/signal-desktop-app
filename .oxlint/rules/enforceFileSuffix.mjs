@@ -195,6 +195,8 @@ const DOM_PACKAGES = new Set([
 
 // Packages that can run in both browser/node
 const STD_PACKAGES = new Set([
+  '@letta-ai/letta-agent-sdk',
+  '@letta-ai/letta-agent-sdk/client',
   '@babel/core',
   '@babel/plugin-transform-runtime',
   '@babel/plugin-transform-typescript',

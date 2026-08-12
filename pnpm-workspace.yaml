@@ -118,6 +118,14 @@ allowBuilds:
   'esbuild': false
   'utf-8-validate': false
   '@signalapp/ringrtc': true
+  # Transitive deps of @letta-ai/letta-agent-sdk (via letta-code). The portable
+  # /client entry used by this fork needs none of their native build steps.
+  '@google/genai': false
+  '@letta-ai/letta-code': false
+  '@scarf/scarf': false
+  node-pty: false
+  protobufjs: false
+  sharp: false
 
 dedupePeers: true
 dedupePeerDependents: true

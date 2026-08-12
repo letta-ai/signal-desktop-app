@@ -215,6 +215,8 @@ import { MessageSender } from './textsecure/SendMessage.preload.ts';
 import { onStoryRecipientUpdate } from './util/onStoryRecipientUpdate.preload.ts';
 import { flushAttachmentDownloadQueue } from './util/attachmentDownloadQueue.preload.ts';
 import { initializeRedux } from './state/initializeRedux.preload.ts';
+import { lettaService } from './services/letta.preload.ts';
+import { LETTA_MODE } from './util/lettaMode.preload.ts';
 import { StartupQueue } from './util/StartupQueue.std.ts';
 import { showConfirmationDialog } from './util/showConfirmationDialog.dom.tsx';
 import { onCallEventSync } from './util/onCallEventSync.preload.ts';
@@ -1402,6 +1404,12 @@ async function startApp(): Promise<void> {
   async function start() {
     // Storage is ready because `start()` is called from `storage.onready()`
 
+    // Letta fork: seed a fabricated-but-valid local identity so the startup
+    // gate below opens the inbox without Signal account linking. No auth
+    // credentials are seeded, so Signal's socket never authenticates.
+    window.lettaService = lettaService;
+    await lettaService.seedIdentity();
+
     initializeAllJobQueues({
       server: {
         isOnline,
@@ -1558,12 +1566,17 @@ async function startApp(): Promise<void> {
       window.ConversationController.getOurConversation()
     );
 
-    if (isCoreDataValid && Registration.everDone()) {
+    if (LETTA_MODE || (isCoreDataValid && Registration.everDone())) {
       idleDetector.start();
-      if (itemStorage.get('backupDownloadPath')) {
+      if (!LETTA_MODE && itemStorage.get('backupDownloadPath')) {
         window.reduxActions.installer.showBackupImport();
       } else {
         window.reduxActions.app.openInbox();
+      }
+      if (LETTA_MODE) {
+        // Bind the single conversation to the Letta agent and bring up the SDK.
+        drop(lettaService.initialize());
+        drop(lettaService.bootstrapConversation());
       }
     } else {
       window.IPC.readyForUpdates();
@@ -3449,6 +3462,14 @@ async function startApp(): Promise<void> {
   }
 
   async function unlinkAndDisconnect(): Promise<void> {
+    if (LETTA_MODE) {
+      // In the Letta fork there is no Signal account to unlink; a stray auth
+      // error must never wipe the fabricated local identity or bounce the app
+      // back to the installer.
+      log.info('unlinkAndDisconnect: ignored in LETTA_MODE');
+      return;
+    }
+
     window.Whisper.events.emit('unauthorized');
 
     log.warn(

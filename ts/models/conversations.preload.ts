@@ -30,6 +30,7 @@ import {
   writeNewAttachmentData,
 } from '../util/migrations.preload.ts';
 import { drop } from '../util/drop.std.ts';
+import { LETTA_MODE } from '../util/lettaMode.preload.ts';
 import { isShallowEqual } from '../util/isShallowEqual.std.ts';
 import { getInitials } from '../util/getInitials.std.ts';
 import { clearTimeoutIfNecessary } from '../util/clearTimeoutIfNecessary.std.ts';
@@ -4389,23 +4390,31 @@ export class ConversationModel {
       reason: 'mandatoryProfileSharing',
     });
 
-    await conversationJobQueue.add(
-      {
-        type: conversationQueueJobEnum.enum.NormalMessage,
-        conversationId: this.id,
-        messageId: model.id,
-        revision: this.get('revision'),
-      },
-      async jobToInsert => {
-        log.info(
-          `enqueueMessageForSend: saving message ${model.id} and job ${jobToInsert.id}`
-        );
-        await window.MessageCache.saveMessage(model, {
-          jobToInsert,
-          forceSave: true,
-        });
-      }
-    );
+    if (LETTA_MODE) {
+      // Letta fork: instead of handing the message to the Signal transport,
+      // persist it and forward its text to the Letta agent. The optimistic
+      // outgoing bubble (already inserted above) is untouched.
+      await window.MessageCache.saveMessage(model, { forceSave: true });
+      drop(window.lettaService?.sendText(model));
+    } else {
+      await conversationJobQueue.add(
+        {
+          type: conversationQueueJobEnum.enum.NormalMessage,
+          conversationId: this.id,
+          messageId: model.id,
+          revision: this.get('revision'),
+        },
+        async jobToInsert => {
+          log.info(
+            `enqueueMessageForSend: saving message ${model.id} and job ${jobToInsert.id}`
+          );
+          await window.MessageCache.saveMessage(model, {
+            jobToInsert,
+            forceSave: true,
+          });
+        }
+      );
+    }
 
     const dbDuration = Date.now() - dbStart;
     if (dbDuration > SEND_REPORTING_THRESHOLD_MS) {
