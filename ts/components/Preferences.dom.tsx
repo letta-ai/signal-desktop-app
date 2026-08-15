@@ -103,8 +103,17 @@ import { TitlebarDragArea } from './TitlebarDragArea.dom.tsx';
 import type { PreferredBadgeSelectorType } from '../state/selectors/badges.preload.ts';
 import { Emoji } from '../axo/emoji.std.ts';
 import { AxoConfirmDialog } from '../axo/AxoConfirmDialog.dom.tsx';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 
 const { isNumber, noop, partition } = lodash;
+
+const LETTA_SETTINGS_PAGES = new Set<SettingsPage>([
+  SettingsPage.General,
+  SettingsPage.Appearance,
+  SettingsPage.ChatColor,
+  SettingsPage.Chats,
+  SettingsPage.Notifications,
+]);
 
 type CheckboxChangeHandlerType = (value: boolean) => unknown;
 type SelectChangeHandlerType<T = string | number> = (value: T) => unknown;
@@ -650,8 +659,14 @@ export function Preferences({
     setSettingsLocation({ page: SettingsPage.General });
   }
 
+  useEffect(() => {
+    if (LETTA_MODE && !LETTA_SETTINGS_PAGES.has(settingsLocation.page)) {
+      setSettingsLocation({ page: SettingsPage.General });
+    }
+  }, [settingsLocation.page, setSettingsLocation]);
+
   let maybeUpdateDialog: JSX.Element | undefined;
-  if (shouldShowUpdateDialog) {
+  if (!LETTA_MODE && shouldShowUpdateDialog) {
     maybeUpdateDialog = renderUpdateDialog({
       containerWidthBreakpoint: WidthBreakpoint.Wide,
     });
@@ -816,45 +831,47 @@ export function Preferences({
   } else if (settingsLocation.page === SettingsPage.General) {
     const pageContents = (
       <>
-        <SettingsRow>
-          <FlowingControl>
-            <div className="Preferences__half-flow">
-              {i18n('icu:Preferences--phone-number')}
-            </div>
-            <div
-              className={classNames(
-                'Preferences__flow-value',
-                'Preferences__half-flow',
-                'Preferences__half-flow--align-right'
-              )}
-            >
-              {phoneNumber}
-            </div>
-          </FlowingControl>
-          <FlowingControl>
-            <div className="Preferences__half-flow">
-              {i18n('icu:Preferences--device-name')}
-            </div>
-            <div
-              className={classNames(
-                'Preferences__flow-value',
-                'Preferences__half-flow',
-                'Preferences__half-flow--align-right'
-              )}
-            >
-              {deviceName}
-            </div>
-            <div
-              className={classNames(
-                'Preferences__device-name-description',
-                'Preferences__description',
-                'Preferences__full-flow'
-              )}
-            >
-              {i18n('icu:Preferences--device-name__description')}
-            </div>
-          </FlowingControl>
-        </SettingsRow>
+        {!LETTA_MODE && (
+          <SettingsRow>
+            <FlowingControl>
+              <div className="Preferences__half-flow">
+                {i18n('icu:Preferences--phone-number')}
+              </div>
+              <div
+                className={classNames(
+                  'Preferences__flow-value',
+                  'Preferences__half-flow',
+                  'Preferences__half-flow--align-right'
+                )}
+              >
+                {phoneNumber}
+              </div>
+            </FlowingControl>
+            <FlowingControl>
+              <div className="Preferences__half-flow">
+                {i18n('icu:Preferences--device-name')}
+              </div>
+              <div
+                className={classNames(
+                  'Preferences__flow-value',
+                  'Preferences__half-flow',
+                  'Preferences__half-flow--align-right'
+                )}
+              >
+                {deviceName}
+              </div>
+              <div
+                className={classNames(
+                  'Preferences__device-name-description',
+                  'Preferences__description',
+                  'Preferences__full-flow'
+                )}
+              >
+                {i18n('icu:Preferences--device-name__description')}
+              </div>
+            </FlowingControl>
+          </SettingsRow>
+        )}
         <SettingsRow title={i18n('icu:Preferences--system')}>
           {isAutoLaunchSupported && (
             <Checkbox
@@ -903,25 +920,64 @@ export function Preferences({
             </>
           )}
         </SettingsRow>
-        <SettingsRow title={i18n('icu:permissions')}>
-          <Checkbox
-            checked={hasMediaPermissions}
-            disabled={hasMediaPermissions === undefined}
-            label={i18n('icu:mediaPermissionsDescription')}
-            moduleClassName="Preferences__checkbox"
-            name="mediaPermissions"
-            onChange={onMediaPermissionsChange}
-          />
-          <Checkbox
-            checked={hasMediaCameraPermissions ?? false}
-            disabled={hasMediaCameraPermissions === undefined}
-            label={i18n('icu:mediaCameraPermissionsDescription')}
-            moduleClassName="Preferences__checkbox"
-            name="mediaCameraPermissions"
-            onChange={onMediaCameraPermissionsChange}
-          />
-        </SettingsRow>
-        {isAutoDownloadUpdatesSupported && (
+        {LETTA_MODE && (
+          <SettingsRow title="Local data">
+            <Control
+              left={
+                <>
+                  <div>Reset local data</div>
+                  <div className="Preferences__description">
+                    Delete local conversations and settings from Signal Letta.
+                  </div>
+                </>
+              }
+              right={
+                <AxoButton.Root
+                  variant="subtle-destructive"
+                  size="lg"
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Reset
+                </AxoButton.Root>
+              }
+            />
+            <AxoConfirmDialog.Root
+              open={confirmDelete}
+              onOpenChange={setConfirmDelete}
+              title="Reset local data?"
+              description="This deletes all local conversations and settings from Signal Letta."
+            >
+              <AxoConfirmDialog.Cancel />
+              <AxoConfirmDialog.Action
+                variant="strong-destructive"
+                onClick={doDeleteAllData}
+              >
+                Reset
+              </AxoConfirmDialog.Action>
+            </AxoConfirmDialog.Root>
+          </SettingsRow>
+        )}
+        {!LETTA_MODE && (
+          <SettingsRow title={i18n('icu:permissions')}>
+            <Checkbox
+              checked={hasMediaPermissions}
+              disabled={hasMediaPermissions === undefined}
+              label={i18n('icu:mediaPermissionsDescription')}
+              moduleClassName="Preferences__checkbox"
+              name="mediaPermissions"
+              onChange={onMediaPermissionsChange}
+            />
+            <Checkbox
+              checked={hasMediaCameraPermissions ?? false}
+              disabled={hasMediaCameraPermissions === undefined}
+              label={i18n('icu:mediaCameraPermissionsDescription')}
+              moduleClassName="Preferences__checkbox"
+              name="mediaCameraPermissions"
+              onChange={onMediaCameraPermissionsChange}
+            />
+          </SettingsRow>
+        )}
+        {!LETTA_MODE && isAutoDownloadUpdatesSupported && (
           <SettingsRow title={i18n('icu:Preferences--updates')}>
             <Checkbox
               checked={hasAutoDownloadUpdate}
@@ -1212,16 +1268,18 @@ export function Preferences({
             name="linkPreviews"
             onChange={onLinkPreviewsChange}
           />
-          <Checkbox
-            checked={hasPreferContactAvatars}
-            label={i18n('icu:Preferences__address-book-photos--title')}
-            description={i18n(
-              'icu:Preferences__address-book-photos--description'
-            )}
-            moduleClassName="Preferences__checkbox"
-            name="typingIndicators"
-            onChange={onPreferContactAvatarsChange}
-          />
+          {!LETTA_MODE && (
+            <Checkbox
+              checked={hasPreferContactAvatars}
+              label={i18n('icu:Preferences__address-book-photos--title')}
+              description={i18n(
+                'icu:Preferences__address-book-photos--description'
+              )}
+              moduleClassName="Preferences__checkbox"
+              name="typingIndicators"
+              onChange={onPreferContactAvatarsChange}
+            />
+          )}
           <Checkbox
             checked={hasAutoConvertEmoji}
             description={
@@ -1235,16 +1293,18 @@ export function Preferences({
             name="autoConvertEmoji"
             onChange={onAutoConvertEmojiChange}
           />
-          <Checkbox
-            checked={hasKeepMutedChatsArchived}
-            description={i18n(
-              'icu:Preferences__keep-muted-chats-archived--description'
-            )}
-            label={i18n('icu:Preferences__keep-muted-chats-archived--title')}
-            moduleClassName="Preferences__checkbox"
-            name="keepMutedChatsArchived"
-            onChange={onKeepMutedChatsArchivedChange}
-          />
+          {!LETTA_MODE && (
+            <Checkbox
+              checked={hasKeepMutedChatsArchived}
+              description={i18n(
+                'icu:Preferences__keep-muted-chats-archived--description'
+              )}
+              label={i18n('icu:Preferences__keep-muted-chats-archived--title')}
+              moduleClassName="Preferences__checkbox"
+              name="keepMutedChatsArchived"
+              onChange={onKeepMutedChatsArchivedChange}
+            />
+          )}
           <SettingsRow>
             <Control
               left={i18n('icu:Preferences__EmojiSkinToneDefaultSetting__Label')}
@@ -1259,77 +1319,85 @@ export function Preferences({
             />
           </SettingsRow>
         </SettingsRow>
-        <SettingsRow
-          title={i18n('icu:Preferences__ChatsPage__ChatFoldersSection__Title')}
-        >
-          <Control
-            left={
-              hasAnyCurrentCustomChatFolders
-                ? i18n(
-                    'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Title--WithChatFolders'
-                  )
-                : i18n(
-                    'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Title'
-                  )
-            }
-            description={
-              hasAnyCurrentCustomChatFolders
-                ? i18n(
-                    'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Description--WithChatFolders',
-                    { chatFoldersCount: currentChatFoldersCount }
-                  )
-                : i18n(
-                    'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Description'
-                  )
-            }
-            right={
-              <AxoButton.Root
-                size="lg"
-                variant="subtle-secondary"
-                onClick={() => {
-                  setSettingsLocation({
-                    page: SettingsPage.ChatFolders,
-                    previousLocation: null,
-                  });
-                }}
-              >
-                {hasAnyCurrentCustomChatFolders
+        {!LETTA_MODE && (
+          <SettingsRow
+            title={i18n(
+              'icu:Preferences__ChatsPage__ChatFoldersSection__Title'
+            )}
+          >
+            <Control
+              left={
+                hasAnyCurrentCustomChatFolders
                   ? i18n(
-                      'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Button--WithChatFolders'
+                      'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Title--WithChatFolders'
                     )
                   : i18n(
-                      'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Button'
-                    )}
-              </AxoButton.Root>
-            }
-          />
-        </SettingsRow>
-
-        <SettingsRow>
-          <Control
-            left={
-              <>
-                <div>{i18n('icu:PlaintextExport--PreferencesRow--Header')}</div>
-                <div className="Preferences__description">
-                  {i18n('icu:PlaintextExport--PreferencesRow--Description')}
-                </div>
-              </>
-            }
-            right={
-              <div className="Preferences__right-button">
+                      'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Title'
+                    )
+              }
+              description={
+                hasAnyCurrentCustomChatFolders
+                  ? i18n(
+                      'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Description--WithChatFolders',
+                      { chatFoldersCount: currentChatFoldersCount }
+                    )
+                  : i18n(
+                      'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Description'
+                    )
+              }
+              right={
                 <AxoButton.Root
-                  variant="subtle-secondary"
                   size="lg"
-                  onClick={startPlaintextExport}
+                  variant="subtle-secondary"
+                  onClick={() => {
+                    setSettingsLocation({
+                      page: SettingsPage.ChatFolders,
+                      previousLocation: null,
+                    });
+                  }}
                 >
-                  {i18n('icu:PlaintextExport--ActionButton')}
+                  {hasAnyCurrentCustomChatFolders
+                    ? i18n(
+                        'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Button--WithChatFolders'
+                      )
+                    : i18n(
+                        'icu:Preferences__ChatsPage__ChatFoldersSection__AddChatFolderItem__Button'
+                      )}
                 </AxoButton.Root>
-              </div>
-            }
-          />
-        </SettingsRow>
+              }
+            />
+          </SettingsRow>
+        )}
 
-        {isSyncSupported && (
+        {!LETTA_MODE && (
+          <SettingsRow>
+            <Control
+              left={
+                <>
+                  <div>
+                    {i18n('icu:PlaintextExport--PreferencesRow--Header')}
+                  </div>
+                  <div className="Preferences__description">
+                    {i18n('icu:PlaintextExport--PreferencesRow--Description')}
+                  </div>
+                </>
+              }
+              right={
+                <div className="Preferences__right-button">
+                  <AxoButton.Root
+                    variant="subtle-secondary"
+                    size="lg"
+                    onClick={startPlaintextExport}
+                  >
+                    {i18n('icu:PlaintextExport--ActionButton')}
+                  </AxoButton.Root>
+                </div>
+              }
+            />
+          </SettingsRow>
+        )}
+
+        {!LETTA_MODE && isSyncSupported && (
           <SettingsRow>
             <Control
               left={
@@ -1544,13 +1612,15 @@ export function Preferences({
             name="notifications"
             onChange={onNotificationsChange}
           />
-          <Checkbox
-            checked={hasCallNotifications}
-            label={i18n('icu:callSystemNotificationDescription')}
-            moduleClassName="Preferences__checkbox"
-            name="callSystemNotification"
-            onChange={onCallNotificationsChange}
-          />
+          {!LETTA_MODE && (
+            <Checkbox
+              checked={hasCallNotifications}
+              label={i18n('icu:callSystemNotificationDescription')}
+              moduleClassName="Preferences__checkbox"
+              name="callSystemNotification"
+              onChange={onCallNotificationsChange}
+            />
+          )}
           {isNotificationAttentionSupported && (
             <Checkbox
               checked={hasNotificationAttention}
@@ -1560,13 +1630,15 @@ export function Preferences({
               onChange={onNotificationAttentionChange}
             />
           )}
-          <Checkbox
-            checked={hasCountMutedConversations}
-            label={i18n('icu:countMutedConversationsDescription')}
-            moduleClassName="Preferences__checkbox"
-            name="countMutedConversations"
-            onChange={onCountMutedConversationsChange}
-          />
+          {!LETTA_MODE && (
+            <Checkbox
+              checked={hasCountMutedConversations}
+              label={i18n('icu:countMutedConversationsDescription')}
+              moduleClassName="Preferences__checkbox"
+              name="countMutedConversations"
+              onChange={onCountMutedConversationsChange}
+            />
+          )}
         </SettingsRow>
         <SettingsRow>
           <Control
@@ -1614,57 +1686,58 @@ export function Preferences({
             onChange={onMessageAudioChange}
           />
         </SettingsRow>
-        {notificationProfileCount > 0 ? (
-          <FullWidthButton
-            testId="ManageNotificationProfiles"
-            className={tw(
-              'mx-[10px] mt-[-3px] min-h-[52px] max-w-[calc(100%-20px)]'
-            )}
-            onClick={() =>
-              setSettingsLocation({
-                page: SettingsPage.NotificationProfilesHome,
-              })
-            }
-          >
-            <div className={tw('grow text-start')}>
-              <div>{i18n('icu:NotificationProfiles--setting')}</div>
-              <div className="Preferences__description">
-                {i18n('icu:NotificationProfiles--manage-description')}
+        {!LETTA_MODE &&
+          (notificationProfileCount > 0 ? (
+            <FullWidthButton
+              testId="ManageNotificationProfiles"
+              className={tw(
+                'mx-[10px] mt-[-3px] min-h-[52px] max-w-[calc(100%-20px)]'
+              )}
+              onClick={() =>
+                setSettingsLocation({
+                  page: SettingsPage.NotificationProfilesHome,
+                })
+              }
+            >
+              <div className={tw('grow text-start')}>
+                <div>{i18n('icu:NotificationProfiles--setting')}</div>
+                <div className="Preferences__description">
+                  {i18n('icu:NotificationProfiles--manage-description')}
+                </div>
               </div>
-            </div>
-            <span className={tw('ms-4')}>
-              {i18n('icu:NotificationProfiles--manage-profiles', {
-                profileCount: notificationProfileCount,
-              })}
-            </span>
-          </FullWidthButton>
-        ) : (
-          <SettingsRow>
-            <Control
-              left={
-                <>
-                  <div>{i18n('icu:NotificationProfiles--setting')}</div>
-                  <div className="Preferences__description">
-                    {i18n('icu:NotificationProfiles--setup-description')}
-                  </div>
-                </>
-              }
-              right={
-                <AxoButton.Root
-                  variant="subtle-secondary"
-                  size="lg"
-                  onClick={() =>
-                    setSettingsLocation({
-                      page: SettingsPage.NotificationProfilesHome,
-                    })
-                  }
-                >
-                  {i18n('icu:NotificationProfiles--setup')}
-                </AxoButton.Root>
-              }
-            />
-          </SettingsRow>
-        )}
+              <span className={tw('ms-4')}>
+                {i18n('icu:NotificationProfiles--manage-profiles', {
+                  profileCount: notificationProfileCount,
+                })}
+              </span>
+            </FullWidthButton>
+          ) : (
+            <SettingsRow>
+              <Control
+                left={
+                  <>
+                    <div>{i18n('icu:NotificationProfiles--setting')}</div>
+                    <div className="Preferences__description">
+                      {i18n('icu:NotificationProfiles--setup-description')}
+                    </div>
+                  </>
+                }
+                right={
+                  <AxoButton.Root
+                    variant="subtle-secondary"
+                    size="lg"
+                    onClick={() =>
+                      setSettingsLocation({
+                        page: SettingsPage.NotificationProfilesHome,
+                      })
+                    }
+                  >
+                    {i18n('icu:NotificationProfiles--setup')}
+                  </AxoButton.Root>
+                }
+              />
+            </SettingsRow>
+          ))}
       </>
     );
     content = (
@@ -2583,72 +2656,76 @@ export function Preferences({
               </div>
             ) : null}
             <div className="Preferences__scroll-area">
-              <div
-                className={classNames({
-                  'Preferences__profile-chip': true,
-                  'Preferences__profile-chip--selected':
-                    settingsLocation.page === SettingsPage.Profile,
-                })}
-              >
-                <div className="Preferences__profile-chip__avatar">
-                  <Avatar
-                    avatarUrl={me.avatarUrl}
-                    badge={badge}
-                    className="module-main-header__avatar"
-                    color={me.color}
-                    conversationType="direct"
-                    i18n={i18n}
-                    phoneNumber={me.phoneNumber}
-                    profileName={me.profileName}
-                    theme={theme}
-                    title={me.title}
-                    size={AvatarSize.FORTY_EIGHT}
-                  />
-                </div>
-                <div className="Preferences__profile-chip__text-container">
-                  <div className="Preferences__profile-chip__name">
-                    {me.title}
-                  </div>
-                  <div className="Preferences__profile-chip__number">
-                    {me.phoneNumber}
-                  </div>
-                  {me.username && (
-                    <div className="Preferences__profile-chip__username">
-                      {me.username}
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="Preferences__profile-chip__button"
-                  aria-label={i18n('icu:ProfileEditor__open')}
-                  onClick={() => {
-                    setSettingsLocation({
-                      page: SettingsPage.Profile,
-                      state: ProfileEditorPage.None,
-                    });
-                  }}
+              {!LETTA_MODE && (
+                <div
+                  className={classNames({
+                    'Preferences__profile-chip': true,
+                    'Preferences__profile-chip--selected':
+                      settingsLocation.page === SettingsPage.Profile,
+                  })}
                 >
-                  <span className="Preferences__profile-chip__screenreader-only">
-                    {i18n('icu:ProfileEditor__open')}
-                  </span>
-                </button>
-                {me.username && (
+                  <div className="Preferences__profile-chip__avatar">
+                    <Avatar
+                      avatarUrl={me.avatarUrl}
+                      badge={badge}
+                      className="module-main-header__avatar"
+                      color={me.color}
+                      conversationType="direct"
+                      i18n={i18n}
+                      phoneNumber={me.phoneNumber}
+                      profileName={me.profileName}
+                      theme={theme}
+                      title={me.title}
+                      size={AvatarSize.FORTY_EIGHT}
+                    />
+                  </div>
+                  <div className="Preferences__profile-chip__text-container">
+                    <div className="Preferences__profile-chip__name">
+                      {me.title}
+                    </div>
+                    <div className="Preferences__profile-chip__number">
+                      {me.phoneNumber}
+                    </div>
+                    {me.username && (
+                      <div className="Preferences__profile-chip__username">
+                        {me.username}
+                      </div>
+                    )}
+                  </div>
                   <button
                     type="button"
-                    className="Preferences__profile-chip__qr-icon-button"
-                    aria-label={i18n('icu:ProfileEditor__username-link__open')}
+                    className="Preferences__profile-chip__button"
+                    aria-label={i18n('icu:ProfileEditor__open')}
                     onClick={() => {
                       setSettingsLocation({
                         page: SettingsPage.Profile,
-                        state: ProfileEditorPage.UsernameLink,
+                        state: ProfileEditorPage.None,
                       });
                     }}
                   >
-                    <div className="Preferences__profile-chip__qr-icon" />
+                    <span className="Preferences__profile-chip__screenreader-only">
+                      {i18n('icu:ProfileEditor__open')}
+                    </span>
                   </button>
-                )}
-              </div>
+                  {me.username && (
+                    <button
+                      type="button"
+                      className="Preferences__profile-chip__qr-icon-button"
+                      aria-label={i18n(
+                        'icu:ProfileEditor__username-link__open'
+                      )}
+                      onClick={() => {
+                        setSettingsLocation({
+                          page: SettingsPage.Profile,
+                          state: ProfileEditorPage.UsernameLink,
+                        });
+                      }}
+                    >
+                      <div className="Preferences__profile-chip__qr-icon" />
+                    </button>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 className={classNames({
@@ -2692,20 +2769,22 @@ export function Preferences({
               >
                 {i18n('icu:Preferences__button--chats')}
               </button>
-              <button
-                type="button"
-                className={classNames({
-                  Preferences__button: true,
-                  'Preferences__button--calls': true,
-                  'Preferences__button--selected':
-                    settingsLocation.page === SettingsPage.Calls,
-                })}
-                onClick={() =>
-                  setSettingsLocation({ page: SettingsPage.Calls })
-                }
-              >
-                {i18n('icu:Preferences__button--calls')}
-              </button>
+              {!LETTA_MODE && (
+                <button
+                  type="button"
+                  className={classNames({
+                    Preferences__button: true,
+                    'Preferences__button--calls': true,
+                    'Preferences__button--selected':
+                      settingsLocation.page === SettingsPage.Calls,
+                  })}
+                  onClick={() =>
+                    setSettingsLocation({ page: SettingsPage.Calls })
+                  }
+                >
+                  {i18n('icu:Preferences__button--calls')}
+                </button>
+              )}
               <button
                 type="button"
                 className={classNames({
@@ -2720,67 +2799,71 @@ export function Preferences({
               >
                 {i18n('icu:Preferences__button--notifications')}
               </button>
-              <button
-                type="button"
-                className={classNames({
-                  Preferences__button: true,
-                  'Preferences__button--privacy': true,
-                  'Preferences__button--selected':
-                    settingsLocation.page === SettingsPage.Privacy ||
-                    settingsLocation.page === SettingsPage.PNP ||
-                    settingsLocation.page === SettingsPage.Blocked,
-                })}
-                onClick={() =>
-                  setSettingsLocation({ page: SettingsPage.Privacy })
-                }
-              >
-                {i18n('icu:Preferences__button--privacy')}
-              </button>
-              <button
-                type="button"
-                className={classNames({
-                  Preferences__button: true,
-                  'Preferences__button--data-usage': true,
-                  'Preferences__button--selected':
-                    settingsLocation.page === SettingsPage.DataUsage,
-                })}
-                onClick={() =>
-                  setSettingsLocation({ page: SettingsPage.DataUsage })
-                }
-              >
-                {i18n('icu:Preferences__button--data-usage')}
-              </button>
-              <button
-                type="button"
-                className={classNames({
-                  Preferences__button: true,
-                  'Preferences__button--backups': true,
-                  'Preferences__button--selected': isBackupPage(
-                    settingsLocation.page
-                  ),
-                })}
-                onClick={() =>
-                  setSettingsLocation({ page: SettingsPage.Backups })
-                }
-              >
-                {i18n('icu:Preferences__button--backups')}
-              </button>
-              <button
-                type="button"
-                className={classNames({
-                  Preferences__button: true,
-                  'Preferences__button--donations': true,
-                  'Preferences__button--selected': isDonationsPage(
-                    settingsLocation.page
-                  ),
-                })}
-                onClick={() =>
-                  setSettingsLocation({ page: SettingsPage.Donations })
-                }
-              >
-                {i18n('icu:Preferences__button--donate')}
-              </button>
-              {isInternalUser ? (
+              {!LETTA_MODE && (
+                <>
+                  <button
+                    type="button"
+                    className={classNames({
+                      Preferences__button: true,
+                      'Preferences__button--privacy': true,
+                      'Preferences__button--selected':
+                        settingsLocation.page === SettingsPage.Privacy ||
+                        settingsLocation.page === SettingsPage.PNP ||
+                        settingsLocation.page === SettingsPage.Blocked,
+                    })}
+                    onClick={() =>
+                      setSettingsLocation({ page: SettingsPage.Privacy })
+                    }
+                  >
+                    {i18n('icu:Preferences__button--privacy')}
+                  </button>
+                  <button
+                    type="button"
+                    className={classNames({
+                      Preferences__button: true,
+                      'Preferences__button--data-usage': true,
+                      'Preferences__button--selected':
+                        settingsLocation.page === SettingsPage.DataUsage,
+                    })}
+                    onClick={() =>
+                      setSettingsLocation({ page: SettingsPage.DataUsage })
+                    }
+                  >
+                    {i18n('icu:Preferences__button--data-usage')}
+                  </button>
+                  <button
+                    type="button"
+                    className={classNames({
+                      Preferences__button: true,
+                      'Preferences__button--backups': true,
+                      'Preferences__button--selected': isBackupPage(
+                        settingsLocation.page
+                      ),
+                    })}
+                    onClick={() =>
+                      setSettingsLocation({ page: SettingsPage.Backups })
+                    }
+                  >
+                    {i18n('icu:Preferences__button--backups')}
+                  </button>
+                  <button
+                    type="button"
+                    className={classNames({
+                      Preferences__button: true,
+                      'Preferences__button--donations': true,
+                      'Preferences__button--selected': isDonationsPage(
+                        settingsLocation.page
+                      ),
+                    })}
+                    onClick={() =>
+                      setSettingsLocation({ page: SettingsPage.Donations })
+                    }
+                  >
+                    {i18n('icu:Preferences__button--donate')}
+                  </button>
+                </>
+              )}
+              {!LETTA_MODE && isInternalUser ? (
                 <button
                   type="button"
                   className={classNames({

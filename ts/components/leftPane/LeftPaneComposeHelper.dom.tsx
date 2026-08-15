@@ -18,6 +18,7 @@ import {
 } from '../../util/uuidFetchState.std.ts';
 import type { GroupListItemConversationType } from '../conversationList/GroupListItem.dom.tsx';
 import { isProbablyAUsername } from '../../util/Username.dom.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 export type LeftPaneComposePropsType = {
   composeContacts: ReadonlyArray<ContactListItemConversationType>;
@@ -62,11 +63,12 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
 
     this.#username = username;
     this.#isUsernameVisible =
+      !LETTA_MODE &&
       Boolean(username) &&
       this.#composeContacts.every(contact => contact.username !== username);
 
     const phoneNumber = parseAndFormatPhoneNumber(searchTerm, regionCode);
-    if (!username && phoneNumber) {
+    if (!LETTA_MODE && !username && phoneNumber) {
       this.#phoneNumber = phoneNumber;
       this.#isPhoneNumberVisible = this.#composeContacts.every(
         contact => contact.e164 !== phoneNumber.e164
@@ -117,7 +119,11 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
         i18n={i18n}
         moduleClassName="module-left-pane__compose-search-form"
         onChange={onChangeComposeSearchTerm}
-        placeholder={i18n('icu:contactSearchPlaceholder')}
+        placeholder={
+          LETTA_MODE
+            ? 'Search agents by name or id'
+            : i18n('icu:contactSearchPlaceholder')
+        }
         ref={focusRef}
         value={this.#searchTerm}
       />
@@ -294,7 +300,7 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
   }
 
   #getTopButtons(): TopButtons {
-    if (this.#searchTerm) {
+    if (LETTA_MODE || this.#searchTerm) {
       return TopButtons.None;
     }
     return TopButtons.Visible;

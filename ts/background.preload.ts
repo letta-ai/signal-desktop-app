@@ -216,7 +216,7 @@ import { onStoryRecipientUpdate } from './util/onStoryRecipientUpdate.preload.ts
 import { flushAttachmentDownloadQueue } from './util/attachmentDownloadQueue.preload.ts';
 import { initializeRedux } from './state/initializeRedux.preload.ts';
 import { lettaService } from './services/letta.preload.ts';
-import { LETTA_MODE } from './util/lettaMode.preload.ts';
+import { LETTA_MODE } from './util/lettaMode.std.ts';
 import { StartupQueue } from './util/StartupQueue.std.ts';
 import { showConfirmationDialog } from './util/showConfirmationDialog.dom.tsx';
 import { onCallEventSync } from './util/onCallEventSync.preload.ts';
@@ -1574,8 +1574,6 @@ async function startApp(): Promise<void> {
         window.reduxActions.app.openInbox();
       }
       if (LETTA_MODE) {
-        // Bind the single conversation to the Letta agent and bring up the SDK.
-        drop(lettaService.initialize());
         drop(lettaService.bootstrapConversation());
       }
     } else {
@@ -2190,7 +2188,9 @@ async function startApp(): Promise<void> {
     );
 
     drop(initializeDonationService());
-    initMegaphoneCheckService();
+    if (!LETTA_MODE) {
+      initMegaphoneCheckService();
+    }
 
     if (isFromMessageReceiver) {
       drop(

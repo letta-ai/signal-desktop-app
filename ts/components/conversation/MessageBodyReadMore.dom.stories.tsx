@@ -20,6 +20,7 @@ export default {
 const createProps = (overrideProps: Partial<Props> = {}): Props => ({
   bodyRanges: overrideProps.bodyRanges,
   direction: 'incoming',
+  disableReadMore: overrideProps.disableReadMore,
   displayLimit: overrideProps.displayLimit,
   i18n,
   id: 'some-id',
@@ -32,11 +33,13 @@ const createProps = (overrideProps: Partial<Props> = {}): Props => ({
 
 function MessageBodyReadMoreTest({
   bodyRanges,
+  disableReadMore,
   isSpoilerExpanded,
   onExpandSpoiler,
   text: messageBodyText,
 }: {
   bodyRanges?: HydratedBodyRangesType;
+  disableReadMore?: boolean;
   isSpoilerExpanded?: Record<number, boolean>;
   onExpandSpoiler?: (data: Record<number, boolean>) => void;
   text: string;
@@ -47,6 +50,7 @@ function MessageBodyReadMoreTest({
     <MessageBodyReadMore
       {...createProps({
         bodyRanges,
+        disableReadMore,
         isSpoilerExpanded,
         onExpandSpoiler,
         text: messageBodyText,
@@ -61,6 +65,15 @@ export function LongText100More(): JSX.Element {
   return (
     <MessageBodyReadMoreTest
       text={`${'test '.repeat(160)}${'extra '.repeat(10)}`}
+    />
+  );
+}
+
+export function LongAgentResponseExpandedByDefault(): JSX.Element {
+  return (
+    <MessageBodyReadMoreTest
+      disableReadMore
+      text={'A complete agent response should stay visible. '.repeat(30)}
     />
   );
 }

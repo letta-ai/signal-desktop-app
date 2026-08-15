@@ -30,7 +30,7 @@ import {
   writeNewAttachmentData,
 } from '../util/migrations.preload.ts';
 import { drop } from '../util/drop.std.ts';
-import { LETTA_MODE } from '../util/lettaMode.preload.ts';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 import { isShallowEqual } from '../util/isShallowEqual.std.ts';
 import { getInitials } from '../util/getInitials.std.ts';
 import { clearTimeoutIfNecessary } from '../util/clearTimeoutIfNecessary.std.ts';

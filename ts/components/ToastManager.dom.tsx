@@ -509,6 +509,14 @@ function renderToast({
     );
   }
 
+  if (toastType === ToastType.LettaSendError) {
+    return (
+      <Toast autoDismissDisabled onClose={hideToast}>
+        {toast.parameters.message}
+      </Toast>
+    );
+  }
+
   if (toastType === ToastType.UnableToDownloadFromBackupTier) {
     return (
       <Toast

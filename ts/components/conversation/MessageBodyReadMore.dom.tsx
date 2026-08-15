@@ -23,6 +23,7 @@ export type Props = Pick<
   | 'textAttachment'
 > & {
   id: string;
+  disableReadMore?: boolean;
   displayLimit?: number;
   messageExpanded: (id: string, displayLimit: number) => unknown;
 };
@@ -39,6 +40,7 @@ export function MessageBodyReadMore({
   bodyRanges,
   direction,
   disableLinks,
+  disableReadMore = false,
   displayLimit,
   i18n,
   id,
@@ -54,11 +56,9 @@ export function MessageBodyReadMore({
   const maxLength = displayLimit || INITIAL_LENGTH;
 
   const shouldDisableLinks = disableLinks || !shouldLinkifyMessage(text);
-  const { hasReadMore, text: slicedText } = graphemeAndLinkAwareSlice(
-    text,
-    maxLength,
-    BUFFER
-  );
+  const { hasReadMore, text: slicedText } = disableReadMore
+    ? { hasReadMore: false, text }
+    : graphemeAndLinkAwareSlice(text, maxLength, BUFFER);
 
   const disableJumbomoji = bodyRanges?.length ? true : undefined;
 

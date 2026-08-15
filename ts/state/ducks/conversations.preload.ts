@@ -12,6 +12,7 @@ import type { AttachmentType } from '../../types/Attachment.std.ts';
 import type { StateType as RootStateType } from '../reducer.preload.ts';
 import * as groups from '../../groups.preload.ts';
 import { createLogger } from '../../logging/log.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { calling } from '../../services/calling.preload.ts';
 import { retryPlaceholders } from '../../services/retryPlaceholders.std.ts';
 import { getOwn } from '../../util/getOwn.std.ts';
@@ -267,8 +268,17 @@ import {
   TimestampMs,
 } from '@signalapp/types';
 
-const { chunk, difference, fromPairs, omit, orderBy, pick, values, without } =
-  lodash;
+const {
+  chunk,
+  debounce,
+  difference,
+  fromPairs,
+  omit,
+  orderBy,
+  pick,
+  values,
+  without,
+} = lodash;
 
 const log = createLogger('conversations');
 
@@ -2565,7 +2575,17 @@ function retryMessageSend(
       );
     }
 
-    message.set({ sendStateByConversationId: newSendStateByConversationId });
+    message.set({
+      sendStateByConversationId: newSendStateByConversationId,
+      errors: undefined,
+    });
+
+    if (LETTA_MODE) {
+      await window.MessageCache.saveMessage(message);
+      drop(window.lettaService?.sendText(message));
+      dispatch(noopAction('retryMessageSend'));
+      return;
+    }
 
     if (isStory(message.attributes)) {
       await conversationJobQueue.add(
@@ -4496,9 +4516,17 @@ function setComposeGroupExpireTimer(
   };
 }
 
+const searchLettaAgentsForCompose = debounce((searchTerm: string) => {
+  if (!LETTA_MODE || !searchTerm.trim() || !window.lettaService) {
+    return;
+  }
+  drop(window.lettaService.searchAgents(searchTerm));
+}, 250);
+
 function setComposeSearchTerm(
   searchTerm: string
 ): SetComposeSearchTermActionType {
+  searchLettaAgentsForCompose(searchTerm);
   return {
     type: 'SET_COMPOSE_SEARCH_TERM',
     payload: { searchTerm },

@@ -311,6 +311,12 @@
   .module-timeline--width-medium & {
     max-width: 370px;
   }
+
+  &.module-message__container-outer--letta-agent {
+    // Agent replies are long-form reading content. Keep a comfortable line
+    // length on wide windows and use the available space on narrow windows.
+    max-width: min(760px, calc(100% - 16px - 22px));
+  }
 }
 
 $message-padding-vertical: 8px;

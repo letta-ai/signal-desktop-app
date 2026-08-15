@@ -33,6 +33,7 @@ import type { MenuItemConstructorOptions, Settings } from 'electron';
 import { z } from 'zod';
 
 import { packageJson } from '../ts/util/packageJson.main.ts';
+import { LETTA_MODE } from '../ts/util/lettaMode.std.ts';
 import * as GlobalErrors from './global_errors.main.ts';
 import { setup as setupCrashReports } from './crashReports.main.ts';
 import { setup as setupSpellChecker } from './spell_check.main.ts';
@@ -1656,8 +1657,12 @@ function getSQLKey(): string {
     ? safeStorage.getSelectedStorageBackend()
     : undefined;
   const isEncryptionAvailable =
-    // Don't use safeStorage if not packaged and building preload cache or
-    // running test-electron to avoid blocking prompt on macOS CI.
+    // Don't use safeStorage in Letta mode: Electron derives the macOS
+    // keychain item from app.getName(), and the stock name ("Signal")
+    // prompts for the installed production app's "Signal Safe Storage".
+    // Also skip if not packaged and building preload cache or running
+    // test-electron to avoid blocking prompt on macOS CI.
+    !LETTA_MODE &&
     (app.isPackaged ||
       (!process.env.GENERATE_PRELOAD_CACHE &&
         !isTestEnvironment(getEnvironment()))) &&

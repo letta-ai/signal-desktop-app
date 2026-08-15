@@ -29,6 +29,7 @@ import {
 import { AggregatedStats } from '../../textsecure/WebsocketResources.preload.ts';
 import { UNAUTHENTICATED_CHANNEL_NAME } from '../../textsecure/SocketManager.preload.ts';
 import { isProduction } from '../../util/version.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { ToastType } from '../../types/Toast.dom.tsx';
 import { ConversationController } from '../../ConversationController.preload.ts';
 import { isEnabled } from '../../RemoteConfig.dom.ts';
@@ -497,7 +498,7 @@ ipc.on('sql-error', () => {
     return;
   }
 
-  if (isProduction(window.getVersion())) {
+  if (LETTA_MODE || isProduction(window.getVersion())) {
     return;
   }
 

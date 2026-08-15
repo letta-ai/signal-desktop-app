@@ -3,25 +3,20 @@
 
 // Letta integration service.
 //
-// Replaces Signal's protocol send/receive with the Letta Agent SDK. The whole
-// app talks to a single conversation that is bound to a Letta agent's default
-// conversation:
-//
-//   * boot: seed a fabricated (but valid) local identity so Signal opens
-//     straight into the inbox without account linking, then guarantee exactly
-//     one visible conversation and auto-select it.
-//   * send: outgoing composer text is forwarded to `session.send()` instead of
-//     the Signal transport (the optimistic outgoing bubble is untouched).
-//   * receive: the agent's streamed reply is injected as an incoming message
-//     model so it renders as a normal incoming bubble, updated live as tokens
-//     stream in.
+// Replaces Signal's protocol send/receive with the Letta Agent SDK. Each
+// Letta agent is a private contact backed by a dedicated conversation.
 
+import { v5 as uuidv5 } from 'uuid';
 import {
   LettaAgentClient,
   CloudManagedSandboxExpiredError,
   createTranscriptAccumulator,
 } from '@letta-ai/letta-agent-sdk/client';
-import type { TranscriptRow } from '@letta-ai/letta-agent-sdk/client';
+import type {
+  SDKResultMessage,
+  TranscriptRow,
+} from '@letta-ai/letta-agent-sdk/client';
+import type { SendMessage } from '@letta-ai/letta-agent-sdk';
 
 import { createLogger } from '../logging/log.std.ts';
 import { drop } from '../util/drop.std.ts';
@@ -32,118 +27,261 @@ import { ReadStatus } from '../messages/MessageReadStatus.std.ts';
 import { SeenStatus } from '../MessageSeenStatus.std.ts';
 import { SendStatus } from '../messages/MessageSendState.std.ts';
 import { itemStorage } from '../textsecure/Storage.preload.ts';
-import { DataWriter } from '../sql/Client.preload.ts';
+import { DataReader, DataWriter } from '../sql/Client.preload.ts';
 import * as Registration from '../util/registration.preload.ts';
-import type { ConversationModel } from '../models/conversations.preload.ts';
+import {
+  deleteAvatar,
+  maybeDeleteAttachmentFile,
+  readAttachmentData,
+  writeNewAttachmentData,
+} from '../util/migrations.preload.ts';
 import type { MessageAttributesType } from '../model-types.d.ts';
+import type { RawBodyRange } from '../types/BodyRange.std.ts';
 import type { AciString } from '../types/ServiceId.std.ts';
+import { IMAGE_PNG } from '../types/MIME.std.ts';
+import { ToastType, type AnyToast } from '../types/Toast.dom.tsx';
+import { formatLettaMarkdown } from '../util/lettaMarkdown.std.ts';
+import { cleanupMessages } from '../util/cleanup.preload.ts';
 import {
   LETTA_MODE,
   LETTA_API_KEY,
-  LETTA_AGENT_MODEL,
+  LETTA_RUNTIME_API_KEY,
   LETTA_OUR_ACI,
-  LETTA_PEER_ACI,
-  LETTA_PEER_NAME,
-  LETTA_AGENT_ID_KEY,
-} from '../util/lettaMode.preload.ts';
+  LETTA_ACI_NAMESPACE,
+  LETTA_LEGACY_PEER_ACI,
+} from '../util/lettaMode.std.ts';
+import { lettaNodeFetch } from '../util/lettaNodeFetch.node.ts';
 
 const log = createLogger('letta');
+const LETTA_API_BASE_URL = 'https://api.letta.com';
+const AGENT_PAGE_SIZE = 50;
+const MAX_AGENT_PAGES = 8;
+const MAX_AGENT_CONTACTS = 40;
+const MAX_AVATAR_LOADS = 4;
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES = 15 * 1024 * 1024;
+const SUPPORTED_IMAGE_MEDIA_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+] as const;
+const CONTACT_CACHE_KEY = 'lettaAgentContactsV1';
 
-// `lettaAgentId` is not part of Signal's typed storage key union; use a loose
-// accessor for our own keys.
 const untypedStorage = itemStorage as unknown as {
   get(key: string): unknown;
   put(key: string, value: unknown): Promise<void>;
 };
 
-// The SDK's portable client + session are structurally typed here to avoid
-// depending on the exact exported names, which live behind the /client entry.
+type SupportedImageMediaType = (typeof SUPPORTED_IMAGE_MEDIA_TYPES)[number];
+
 type LettaSession = {
-  send(message: string): Promise<void>;
+  initialize(): Promise<{
+    agentId: string;
+    sessionId: string;
+    conversationId: string;
+  }>;
+  send(message: SendMessage): Promise<void>;
   stream(): AsyncGenerator<LettaStreamMessage>;
   close?(): void;
 };
 
 type LettaStreamMessage =
   | { type: 'assistant'; content: string; uuid: string; otid?: string | null }
-  | {
-      type: 'result';
-      success: boolean;
-      result?: string;
-      error?: string;
-      errorCode?: string;
-      errorDetail?: string;
-    }
+  | SDKResultMessage
   | { type: string; [key: string]: unknown };
+
+type AgentContact = {
+  agentId: string;
+  name: string;
+  conversationId: string;
+  lettaConversationId?: string;
+};
+
+type AgentSummary = {
+  id: string;
+  name?: string | null;
+  hidden?: boolean | null;
+};
+
+type AvatarLoad = {
+  agentId: string;
+  conversationId: string;
+};
+
+type RemoteConversationMessage = {
+  id?: string;
+  date?: string;
+  seq_id?: number;
+  message_type?: string;
+  content?: string;
+};
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+  return String(error);
+}
+
+function visibleSendError(error?: unknown): string {
+  const detail = error == null ? '' : formatError(error);
+  if (detail.includes('Insufficient credits')) {
+    return 'Message not sent. Add at least $1 in Letta organization credits.';
+  }
+  if (detail.includes('401 Unauthorized')) {
+    return 'Message not sent. Letta authentication failed.';
+  }
+  if (detail.includes('Cloud managed sandbox session closed')) {
+    return 'Message not sent. The Letta execution environment closed during startup.';
+  }
+  if (
+    detail.includes('approval_conflict') ||
+    detail.includes('requires_approval') ||
+    detail.includes('waiting for approval') ||
+    detail.includes('No canUseTool callback registered')
+  ) {
+    return 'Message stopped because a tool approval could not be completed. Try again.';
+  }
+  if (detail.includes('Too many image attachments')) {
+    return `Message not sent. Attach no more than ${MAX_IMAGE_ATTACHMENTS} images.`;
+  }
+  if (detail.includes('Unsupported attachment type')) {
+    return 'Message not sent. Use PNG, JPEG, GIF, or WebP images.';
+  }
+  if (detail.includes('Image attachment is too large')) {
+    return 'Message not sent. One of the images is too large.';
+  }
+  return 'Message not sent. Unable to reach Letta.';
+}
+
+function bodyRangesEqual(
+  left: unknown,
+  right: ReadonlyArray<RawBodyRange>
+): boolean {
+  return JSON.stringify(left ?? []) === JSON.stringify(right);
+}
+
+function legacyAddressForAgent(agentId: string): string {
+  return uuidv5(agentId, LETTA_ACI_NAMESPACE);
+}
+
+function aciForAgent(agentId: string): AciString {
+  const uuid = legacyAddressForAgent(agentId);
+  // Signal accepts v4 and v7 service IDs. UUID v5 gives us stable hashing, so
+  // preserve its bits and mark the result as v4 for the local synthetic ACI.
+  return `${uuid.slice(0, 14)}4${uuid.slice(15)}` as AciString;
+}
+
+function signalMessageIdForRemote(remoteMessageId: string): string {
+  const uuid = uuidv5(remoteMessageId, LETTA_ACI_NAMESPACE);
+  return `${uuid.slice(0, 14)}4${uuid.slice(15)}`;
+}
+
+function displayName(
+  agent: { name?: string | null; id?: string },
+  used: Set<string>
+): string {
+  const base =
+    agent.name?.trim() ||
+    (agent.id ? `Agent ${agent.id.slice(6, 14)}` : 'Letta agent');
+  if (!used.has(base)) {
+    used.add(base);
+    return base;
+  }
+  const suffix = (agent.id ?? '').replace(/^agent-/, '').slice(0, 6);
+  const unique = suffix ? `${base} (${suffix})` : base;
+  used.add(unique);
+  return unique;
+}
+
+function isSupportedImageMediaType(
+  value: string
+): value is SupportedImageMediaType {
+  return SUPPORTED_IMAGE_MEDIA_TYPES.some(mediaType => mediaType === value);
+}
+
+function isClosedCloudSession(error: unknown): boolean {
+  return (
+    error instanceof CloudManagedSandboxExpiredError ||
+    (error instanceof Error &&
+      error.message.includes(
+        'Cloud managed sandbox session closed during initialization'
+      ))
+  );
+}
 
 class LettaService {
   #client: LettaAgentClient | undefined;
-  #session: LettaSession | undefined;
-  #agentId: string | undefined;
-  #conversationId: string | undefined;
+  #directoryClient: LettaAgentClient | undefined;
   #initPromise: Promise<void> | undefined;
+  #initError: string | undefined;
+  readonly #contacts = new Map<string, AgentContact>();
+  readonly #sessions = new Map<string, LettaSession>();
+  readonly #typingRefreshTimers = new Map<
+    string,
+    ReturnType<typeof setInterval>
+  >();
+  readonly #avatarQueue: Array<AvatarLoad> = [];
+  readonly #queuedAvatarAgentIds = new Set<string>();
+  #activeAvatarLoads = 0;
+  #restoringContacts = false;
+  #visibleSendErrorToast: AnyToast | undefined;
 
-  // Serializes turns: the SDK's stream() drains one shared queue, so only one
-  // turn may run at a time. Sends that arrive mid-turn are chained.
-  #turnChain: Promise<unknown> = Promise.resolve();
+  // Serializes turns per conversation. The SDK stream() drains one shared
+  // queue per session, so only one turn may run at a time for that agent.
+  readonly #turnChains = new Map<string, Promise<unknown>>();
 
   isEnabled(): boolean {
     return LETTA_MODE;
   }
 
-  // ---- Boot: identity + conversation ------------------------------------
-
-  // Seed a valid-but-fabricated registration so Signal's startup gate opens the
-  // inbox. Critically we do NOT seed auth credentials (number_id/password), so
-  // Signal's SocketManager never has credentials and never attempts to
-  // authenticate against a server — no 401, no unlink. Idempotent per boot.
   async seedIdentity(): Promise<void> {
     if (!LETTA_MODE) {
       return;
     }
     try {
       if (itemStorage.user.getAci() !== LETTA_OUR_ACI) {
-        await itemStorage.user.setAciAndDeviceId(
-          LETTA_OUR_ACI as AciString,
-          1
-        );
+        await itemStorage.user.setAciAndDeviceId(LETTA_OUR_ACI as AciString, 1);
       }
       if (!Registration.everDone()) {
         await Registration.markDone();
       }
-      // Never divert to backup import.
       if (itemStorage.get('backupDownloadPath')) {
         await itemStorage.remove('backupDownloadPath');
       }
+      // Hide Signal's leftover onboarding cards.
+      if (!itemStorage.get('hasCompletedUsernameOnboarding')) {
+        await itemStorage.put('hasCompletedUsernameOnboarding', true);
+      }
       log.info('seedIdentity: local Letta identity ready');
     } catch (error) {
-      log.error('seedIdentity failed', error);
+      log.error('seedIdentity failed', formatError(error));
     }
   }
 
-  // Ensure exactly one visible conversation (the Letta agent thread) exists and
-  // is selected. Everything else is hidden from the left pane (active_at null).
   async bootstrapConversation(): Promise<void> {
     if (!LETTA_MODE) {
       return;
     }
     try {
-      const conversation =
-        await window.ConversationController.getOrCreateAndWait(
-          LETTA_PEER_ACI,
-          'private',
-          {
-            active_at: Date.now(),
-            profileSharing: true,
-            name: LETTA_PEER_NAME,
-            systemGivenName: LETTA_PEER_NAME,
-          }
-        );
-      this.#conversationId = conversation.id;
+      await this.initialize();
+      if (this.#contacts.size === 0) {
+        log.warn('bootstrapConversation: no agent contacts');
+        return;
+      }
 
       const ourId = window.ConversationController.getOurConversationId();
+      const keep = new Set(
+        [...this.#contacts.values()].map(contact => contact.conversationId)
+      );
+      if (ourId) {
+        keep.add(ourId);
+      }
+
       for (const other of window.ConversationController.getAll()) {
-        if (other.id === conversation.id || other.id === ourId) {
+        if (keep.has(other.id)) {
           continue;
         }
         if (other.get('active_at') != null || other.get('isPinned')) {
@@ -152,18 +290,32 @@ class LettaService {
         }
       }
 
-      // Select it and switch to the Chats view.
-      window.reduxActions.conversations.showConversation({
-        conversationId: conversation.id,
-        switchToAssociatedView: true,
+      const mostRecent = [...this.#contacts.values()]
+        .map(contact => ({
+          contact,
+          conversation: window.ConversationController.get(
+            contact.conversationId
+          ),
+        }))
+        .filter(({ conversation }) => conversation?.get('active_at') != null)
+        .map(({ contact, conversation }) => ({
+          contact,
+          timestamp: conversation?.get('timestamp') ?? 0,
+        }))
+        .sort((left, right) => right.timestamp - left.timestamp)[0]?.contact;
+      if (mostRecent) {
+        window.reduxActions.conversations.showConversation({
+          conversationId: mostRecent.conversationId,
+          switchToAssociatedView: true,
+        });
+      }
+      log.info('bootstrapConversation: agent contacts ready', {
+        count: this.#contacts.size,
       });
-      log.info('bootstrapConversation: single conversation ready');
     } catch (error) {
-      log.error('bootstrapConversation failed', error);
+      log.error('bootstrapConversation failed', formatError(error));
     }
   }
-
-  // ---- SDK lifecycle -----------------------------------------------------
 
   initialize(): Promise<void> {
     if (!LETTA_MODE) {
@@ -174,147 +326,978 @@ class LettaService {
   }
 
   async #doInitialize(): Promise<void> {
-    if (!LETTA_API_KEY) {
-      log.error(
-        'LETTA_API_KEY is not set — the agent will be unreachable. ' +
-          'Set it in the environment before launching.'
-      );
+    if (!LETTA_API_KEY || !LETTA_RUNTIME_API_KEY) {
+      this.#initError =
+        'No Letta credentials. Set LETTA_API_KEY and LETTA_RUNTIME_API_KEY.';
+      log.error(this.#initError);
       return;
     }
 
     this.#client = new LettaAgentClient({
       backend: 'cloud',
-      apiKey: LETTA_API_KEY,
-      // A browser WebSocket cannot send an Authorization header, so the SDK
-      // must pass the token as a query parameter.
+      apiKey: LETTA_RUNTIME_API_KEY,
       webSocketAuth: 'query',
-      // Agent turns can be long; the default (120s) is too tight.
       requestTimeoutMs: 600_000,
+      fetch: lettaNodeFetch as typeof fetch,
+    } as ConstructorParameters<typeof LettaAgentClient>[0]);
+    this.#directoryClient = new LettaAgentClient({
+      backend: 'cloud',
+      apiKey: LETTA_API_KEY,
+      webSocketAuth: 'query',
+      requestTimeoutMs: 600_000,
+      fetch: lettaNodeFetch as typeof fetch,
     } as ConstructorParameters<typeof LettaAgentClient>[0]);
 
-    this.#agentId = await this.#resolveAgentId();
-    if (!this.#agentId) {
+    try {
+      const restored = await this.#restoreCachedContacts();
+      if (restored > 0) {
+        log.info('restored cached agent contacts', { count: restored });
+        drop(this.#loadAgentContacts());
+      } else {
+        await this.#loadAgentContacts();
+      }
+    } catch (error) {
+      this.#initError = `Could not list Letta agents: ${formatError(error)}`;
+      log.error(this.#initError);
+    }
+  }
+
+  async #loadAgentContacts(): Promise<void> {
+    if (!this.#client) {
       return;
     }
 
-    // A non-`conv-` id resumes the agent's DEFAULT conversation — the one
-    // durable thread this app is built around. Never createSession().
-    this.#session = this.#client.resumeSession(
-      this.#agentId
-    ) as unknown as LettaSession;
-    log.info('letta service initialized', { agentId: this.#agentId });
+    const usedNames = new Set(
+      [...this.#contacts.values()].map(contact => contact.name)
+    );
+    const firstBatch = await this.#listAgentPage();
+    await this.#addAgentContacts(firstBatch, usedNames);
+
+    const legacy = window.ConversationController.get(LETTA_LEGACY_PEER_ACI);
+    if (legacy && !this.#contacts.has(legacy.id)) {
+      legacy.set({ active_at: null, isPinned: false });
+      drop(DataWriter.updateConversation(legacy.attributes));
+    }
+
+    log.info('loaded agent contacts', {
+      count: this.#contacts.size,
+      names: [...this.#contacts.values()].map(contact => contact.name),
+    });
+    await this.#persistContacts();
+
+    if (this.#contacts.size === 0) {
+      log.warn('no named people agents found; inbox stays empty until search');
+    }
+
+    const after = firstBatch[firstBatch.length - 1]?.id;
+    if (
+      after &&
+      firstBatch.length === AGENT_PAGE_SIZE &&
+      this.#contacts.size < MAX_AGENT_CONTACTS
+    ) {
+      drop(this.#loadMoreAgentContacts(after, usedNames));
+    }
   }
 
-  async #resolveAgentId(): Promise<string | undefined> {
-    const stored = untypedStorage.get(LETTA_AGENT_ID_KEY) as string | undefined;
-    if (stored) {
-      return stored;
+  async #listAgentPage(after?: string): Promise<Array<AgentSummary>> {
+    if (!this.#directoryClient) {
+      return [];
     }
-    if (!this.#client) {
-      return undefined;
+    return this.#directoryClient.agents.list({
+      limit: AGENT_PAGE_SIZE,
+      order: 'desc',
+      orderBy: 'createdAt',
+      after,
+    });
+  }
+
+  async #loadMoreAgentContacts(
+    initialAfter: string,
+    usedNames: Set<string>
+  ): Promise<void> {
+    let after: string | undefined = initialAfter;
+    for (let page = 1; page < MAX_AGENT_PAGES; page += 1) {
+      let batch: Array<AgentSummary>;
+      try {
+        // Pages depend on the cursor returned by the previous page.
+        // oxlint-disable-next-line no-await-in-loop
+        batch = await this.#listAgentPage(after);
+      } catch (error) {
+        log.warn('agents.list page failed', formatError(error));
+        break;
+      }
+      if (batch.length === 0) {
+        break;
+      }
+      // Preserve contact limits and stable duplicate-name suffixes across pages.
+      // oxlint-disable-next-line no-await-in-loop
+      await this.#addAgentContacts(batch, usedNames);
+      // oxlint-disable-next-line no-await-in-loop
+      await this.#persistContacts();
+      log.info('loaded more agent contacts', { count: this.#contacts.size });
+      if (this.#contacts.size >= MAX_AGENT_CONTACTS) {
+        break;
+      }
+      after = batch[batch.length - 1]?.id;
+      if (batch.length < AGENT_PAGE_SIZE) {
+        break;
+      }
     }
+  }
+
+  async #addAgentContacts(
+    agents: Array<AgentSummary>,
+    usedNames: Set<string>
+  ): Promise<void> {
+    const remaining = MAX_AGENT_CONTACTS - this.#contacts.size;
+    if (remaining <= 0) {
+      return;
+    }
+    const chosen = this.#chooseAgentContacts(agents).slice(0, remaining);
+    for (const agent of chosen) {
+      // Contact creation mutates the shared name and contact indexes.
+      // oxlint-disable-next-line no-await-in-loop
+      await this.#ensureContact(agent, usedNames);
+    }
+  }
+
+  #chooseAgentContacts(agents: Array<AgentSummary>): Array<AgentSummary> {
+    const visible = agents.filter(agent => agent.hidden !== true);
+    const named = visible.filter(agent => {
+      const name = agent.name?.trim() ?? '';
+      return name.length > 0 && !this.#isFactoryAgentName(name);
+    });
+    return named;
+  }
+
+  #isFactoryAgentName(name: string): boolean {
+    return name === 'Letta Code' || name.startsWith('Parity Probe');
+  }
+
+  async searchAgents(query: string): Promise<Array<string>> {
+    const trimmed = query.trim();
+    if (!LETTA_MODE || !trimmed) {
+      return [];
+    }
+    await this.initialize();
+    if (!this.#directoryClient) {
+      return [];
+    }
+
+    const needle = trimmed.toLocaleLowerCase();
+    const conversationIds = [...this.#contacts.values()]
+      .filter(
+        contact =>
+          contact.name.toLocaleLowerCase().includes(needle) ||
+          contact.agentId.toLocaleLowerCase().includes(needle)
+      )
+      .map(contact => contact.conversationId);
+    const seenConversationIds = new Set(conversationIds);
+
+    const found = new Map<
+      string,
+      { id: string; name?: string | null; hidden?: boolean | null }
+    >();
+    const add = (
+      agents: Array<{
+        id: string;
+        name?: string | null;
+        hidden?: boolean | null;
+      }>
+    ) => {
+      for (const agent of agents) {
+        if (agent.hidden === true || !agent.id) {
+          continue;
+        }
+        found.set(agent.id, agent);
+      }
+    };
+
     try {
-      const agentId = await this.#client.createAgent({
-        name: 'Signal Letta',
-        model: LETTA_AGENT_MODEL,
-        hidden: true,
-        memory: [
-          {
-            label: 'persona',
-            value:
-              'You are a warm, concise conversational companion chatting ' +
-              'inside a Signal-style messenger. Reply naturally, like a text ' +
-              'message.',
-          },
-        ],
-      });
-      await untypedStorage.put(LETTA_AGENT_ID_KEY, agentId);
-      log.info('created new Letta agent', { agentId });
-      return agentId;
+      add(
+        await this.#directoryClient.agents.list({
+          query: trimmed,
+          limit: 20,
+          order: 'desc',
+          orderBy: 'createdAt',
+        })
+      );
     } catch (error) {
-      log.error('createAgent failed', error);
-      return undefined;
+      log.warn('searchAgents query failed', formatError(error));
+    }
+
+    try {
+      add(
+        await this.#directoryClient.agents.list({
+          name: trimmed,
+          limit: 20,
+          order: 'desc',
+          orderBy: 'createdAt',
+        })
+      );
+    } catch (error) {
+      log.warn('searchAgents name failed', formatError(error));
+    }
+
+    if (/^agent-[0-9a-f-]{36}$/i.test(trimmed)) {
+      try {
+        const agent = await this.#directoryClient.agents.retrieve(trimmed);
+        add([agent]);
+      } catch (error) {
+        log.warn('searchAgents retrieve failed', formatError(error));
+      }
+    }
+
+    const usedNames = new Set(
+      [...this.#contacts.values()].map(contact => contact.name)
+    );
+    for (const agent of found.values()) {
+      // Contact creation mutates the shared name and contact indexes.
+      // oxlint-disable-next-line no-await-in-loop
+      const conversationId = await this.#ensureContact(agent, usedNames);
+      if (conversationId && !seenConversationIds.has(conversationId)) {
+        seenConversationIds.add(conversationId);
+        conversationIds.push(conversationId);
+      }
+    }
+    log.info('searchAgents', { query: trimmed, count: conversationIds.length });
+    return conversationIds;
+  }
+
+  async #ensureContact(
+    agent: { id: string; name?: string | null },
+    usedNames: Set<string>
+  ): Promise<string | undefined> {
+    const existing = [...this.#contacts.values()].find(
+      contact => contact.agentId === agent.id
+    );
+    if (existing) {
+      const conversation = window.ConversationController.get(
+        existing.conversationId
+      );
+      if (conversation) {
+        const serviceId = aciForAgent(agent.id);
+        if (conversation.getServiceId() !== serviceId) {
+          conversation.updateServiceId(serviceId);
+          conversation.updateE164(undefined);
+        }
+        drop(DataWriter.updateConversation(conversation.attributes));
+      }
+      this.#queueAvatarLoad(agent.id, existing.conversationId);
+      return existing.conversationId;
+    }
+
+    const name = displayName(agent, usedNames);
+    const serviceId = aciForAgent(agent.id);
+    const legacyAddress = legacyAddressForAgent(agent.id);
+    const legacyConversation = window.ConversationController.get(legacyAddress);
+    let conversation;
+    if (legacyConversation) {
+      const merged = window.ConversationController.maybeMergeContacts({
+        aci: serviceId,
+        e164: legacyAddress,
+        reason: 'LettaService.ensureContact',
+      });
+      await Promise.all(merged.mergePromises);
+      conversation = merged.conversation;
+      conversation.updateE164(undefined);
+    } else {
+      conversation = await window.ConversationController.getOrCreateAndWait(
+        serviceId,
+        'private',
+        {
+          active_at: null,
+          profileSharing: true,
+          name,
+          systemGivenName: name,
+          profileName: name,
+        }
+      );
+    }
+    conversation.set({
+      name,
+      systemGivenName: name,
+      profileName: name,
+      profileSharing: true,
+      discoveredUnregisteredAt: undefined,
+      firstUnregisteredAt: undefined,
+    });
+    drop(DataWriter.updateConversation(conversation.attributes));
+    this.#contacts.set(conversation.id, {
+      agentId: agent.id,
+      name,
+      conversationId: conversation.id,
+    });
+    if (!this.#restoringContacts) {
+      await this.#persistContacts();
+    }
+    this.#queueAvatarLoad(agent.id, conversation.id);
+    return conversation.id;
+  }
+
+  async #restoreCachedContacts(): Promise<number> {
+    const cached = untypedStorage.get(CONTACT_CACHE_KEY);
+    if (!Array.isArray(cached)) {
+      return 0;
+    }
+
+    const usedNames = new Set<string>();
+    this.#restoringContacts = true;
+    try {
+      for (const value of cached.slice(0, 100)) {
+        if (!value || typeof value !== 'object') {
+          continue;
+        }
+        const { agentId, name, lettaConversationId } = value as {
+          agentId?: unknown;
+          name?: unknown;
+          lettaConversationId?: unknown;
+        };
+        if (
+          typeof agentId !== 'string' ||
+          !/^agent-[0-9a-f-]{36}$/i.test(agentId) ||
+          typeof name !== 'string' ||
+          !name.trim()
+        ) {
+          continue;
+        }
+        // Contact restoration may merge an older synthetic identity.
+        // oxlint-disable-next-line no-await-in-loop
+        const conversationId = await this.#ensureContact(
+          { id: agentId, name },
+          usedNames
+        );
+        const restored = conversationId
+          ? this.#contacts.get(conversationId)
+          : undefined;
+        if (
+          restored &&
+          typeof lettaConversationId === 'string' &&
+          /^conv-[0-9a-f-]{36}$/i.test(lettaConversationId)
+        ) {
+          restored.lettaConversationId = lettaConversationId;
+        }
+      }
+    } finally {
+      this.#restoringContacts = false;
+    }
+    await Promise.all(
+      [...this.#contacts.values()].map(async contact => {
+        await this.#removeLegacyErrorBubbles(contact);
+        await this.#hydrateRemoteHistory(contact);
+        await this.#reconcileContactVisibility(contact);
+      })
+    );
+    return this.#contacts.size;
+  }
+
+  async #persistContacts(): Promise<void> {
+    await untypedStorage.put(
+      CONTACT_CACHE_KEY,
+      [...this.#contacts.values()].map(
+        ({ agentId, name, lettaConversationId }) => ({
+          agentId,
+          name,
+          lettaConversationId,
+        })
+      )
+    );
+  }
+
+  async #reconcileContactVisibility(contact: AgentContact): Promise<void> {
+    const conversation = window.ConversationController.get(
+      contact.conversationId
+    );
+    if (!conversation) {
+      return;
+    }
+    const lastMessage = await DataReader.getLastConversationMessage({
+      conversationId: conversation.id,
+    });
+    const hasDraft = Boolean(conversation.get('draft')?.trim());
+    const hasStarted = Boolean(
+      contact.lettaConversationId || lastMessage || hasDraft
+    );
+    const activeAt = conversation.get('active_at');
+    const nextActiveAt = hasStarted
+      ? (activeAt ?? lastMessage?.timestamp ?? Date.now())
+      : null;
+    if (activeAt === nextActiveAt) {
+      return;
+    }
+    conversation.set({ active_at: nextActiveAt });
+    await DataWriter.updateConversation(conversation.attributes);
+  }
+
+  async #removeLegacyErrorBubbles(contact: AgentContact): Promise<void> {
+    const conversation = window.ConversationController.get(
+      contact.conversationId
+    );
+    if (!conversation) {
+      return;
+    }
+    const messages = await DataReader.getOlderMessagesByConversation({
+      conversationId: conversation.id,
+      includeStoryReplies: true,
+      limit: 1000,
+      storyId: undefined,
+    });
+    const legacyErrors = messages.filter(
+      message =>
+        message.type === 'incoming' &&
+        typeof message.body === 'string' &&
+        (message.body.startsWith('Failed to reach Letta:') ||
+          message.body.startsWith('Stream error:') ||
+          message.body.startsWith('Agent error:'))
+    );
+    await Promise.all(
+      legacyErrors.map(message =>
+        DataWriter.removeMessageById(message.id, {
+          fromSync: true,
+          cleanupMessages,
+        })
+      )
+    );
+    if (legacyErrors.length > 0) {
+      await conversation.updateLastMessage();
+      log.info('removed legacy error bubbles', {
+        agentId: contact.agentId,
+        count: legacyErrors.length,
+      });
     }
   }
 
-  // ---- Send --------------------------------------------------------------
+  async #hydrateRemoteHistory(contact: AgentContact): Promise<void> {
+    if (!LETTA_API_KEY || !contact.lettaConversationId) {
+      return;
+    }
+    const conversation = window.ConversationController.get(
+      contact.conversationId
+    );
+    if (!conversation) {
+      return;
+    }
+    if (
+      await DataReader.getLastConversationMessage({
+        conversationId: conversation.id,
+      })
+    ) {
+      return;
+    }
 
-  // Called from the send seam. Forwards the outgoing text to the agent and
-  // schedules the streamed reply. Resolves once the turn is enqueued (not when
-  // it completes) so the composer stays responsive.
+    const response = await lettaNodeFetch(
+      `${LETTA_API_BASE_URL}/v1/conversations/${encodeURIComponent(contact.lettaConversationId)}/messages?limit=100`,
+      {
+        headers: {
+          Authorization: `Bearer ${LETTA_API_KEY}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+    if (!response.ok) {
+      log.warn('remote history request failed', {
+        agentId: contact.agentId,
+        status: response.status,
+      });
+      return;
+    }
+    const payload = (await response.json()) as Array<RemoteConversationMessage>;
+    if (!Array.isArray(payload)) {
+      return;
+    }
+    const messages = payload
+      .filter(
+        message =>
+          typeof message.id === 'string' &&
+          typeof message.content === 'string' &&
+          (message.message_type === 'user_message' ||
+            message.message_type === 'assistant_message')
+      )
+      .sort((left, right) => {
+        const leftDate = Date.parse(left.date ?? '') || 0;
+        const rightDate = Date.parse(right.date ?? '') || 0;
+        return leftDate - rightDate || (left.seq_id ?? 0) - (right.seq_id ?? 0);
+      });
+
+    let inserted = 0;
+    for (const remote of messages) {
+      const remoteId = remote.id;
+      const content = remote.content;
+      if (!remoteId || content == null) {
+        continue;
+      }
+      const id = signalMessageIdForRemote(remoteId);
+      // Preserve chronological insertion and notification order.
+      // oxlint-disable-next-line no-await-in-loop
+      if (await DataReader.getMessageById(id)) {
+        continue;
+      }
+      const isIncoming = remote.message_type === 'assistant_message';
+      const date = Date.parse(remote.date ?? '');
+      const timestamp = Number.isFinite(date) ? date : Date.now();
+      const formatted = isIncoming
+        ? formatLettaMarkdown(content)
+        : { body: content, bodyRanges: [] };
+      const attributes = {
+        ...generateMessageId(incrementMessageCounter()),
+        id,
+        conversationId: conversation.id,
+        type: isIncoming ? ('incoming' as const) : ('outgoing' as const),
+        body: formatted.body,
+        bodyRanges: formatted.bodyRanges,
+        sent_at: timestamp,
+        timestamp,
+        received_at_ms: timestamp,
+        ...(isIncoming
+          ? {
+              sourceServiceId: conversation.getServiceId(),
+              sourceDevice: 1,
+            }
+          : {
+              sendStateByConversationId: {
+                [conversation.id]: {
+                  status: SendStatus.Delivered,
+                  updatedAt: timestamp,
+                },
+              },
+            }),
+        readStatus: ReadStatus.Read,
+        seenStatus: isIncoming ? SeenStatus.Seen : SeenStatus.NotApplicable,
+      } as unknown as MessageAttributesType;
+      const model = window.MessageCache.register(new MessageModel(attributes));
+      // oxlint-disable-next-line no-await-in-loop
+      await window.MessageCache.saveMessage(model, { forceSave: true });
+      // oxlint-disable-next-line no-await-in-loop
+      await conversation.onNewMessage(model);
+      inserted += 1;
+    }
+    if (inserted > 0) {
+      await conversation.updateLastMessage();
+      log.info('hydrated remote conversation history', {
+        agentId: contact.agentId,
+        inserted,
+      });
+    }
+  }
+
+  #queueAvatarLoad(agentId: string, conversationId: string): void {
+    if (this.#queuedAvatarAgentIds.has(agentId)) {
+      return;
+    }
+    this.#queuedAvatarAgentIds.add(agentId);
+    this.#avatarQueue.push({ agentId, conversationId });
+    this.#drainAvatarQueue();
+  }
+
+  #drainAvatarQueue(): void {
+    while (
+      this.#activeAvatarLoads < MAX_AVATAR_LOADS &&
+      this.#avatarQueue.length > 0
+    ) {
+      const item = this.#avatarQueue.shift();
+      if (!item) {
+        return;
+      }
+      this.#activeAvatarLoads += 1;
+      void this.#runAvatarLoad(item);
+    }
+  }
+
+  async #runAvatarLoad(item: AvatarLoad): Promise<void> {
+    try {
+      await this.#loadAvatar(item);
+    } finally {
+      this.#activeAvatarLoads -= 1;
+      this.#drainAvatarQueue();
+    }
+  }
+
+  async #loadAvatar({ agentId, conversationId }: AvatarLoad): Promise<void> {
+    if (!LETTA_API_KEY) {
+      return;
+    }
+    const response = await lettaNodeFetch(
+      `${LETTA_API_BASE_URL}/v1/agents/${encodeURIComponent(agentId)}/profile-picture`,
+      {
+        headers: {
+          Authorization: `Bearer ${LETTA_API_KEY}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+    if (response.status === 403 || response.status === 404) {
+      return;
+    }
+    if (!response.ok) {
+      log.warn('profile picture request failed', {
+        agentId,
+        status: response.status,
+      });
+      return;
+    }
+
+    const payload = (await response.json()) as {
+      data_url?: string;
+      commit_sha?: string | null;
+    };
+    const match = payload.data_url?.match(/^data:[^,]*;base64,(.+)$/s);
+    if (!match) {
+      log.warn('profile picture response had no base64 image', { agentId });
+      return;
+    }
+
+    const conversation = window.ConversationController.get(conversationId);
+    if (!conversation) {
+      return;
+    }
+    const oldAvatar = conversation.get('avatar');
+    const oldProfileAvatar = conversation.get('profileAvatar');
+    const avatarRevision = payload.commit_sha
+      ? `letta:${payload.commit_sha}`
+      : undefined;
+    if (
+      avatarRevision &&
+      oldAvatar?.path &&
+      oldAvatar.hash === payload.commit_sha &&
+      oldAvatar.url === avatarRevision &&
+      oldAvatar.contentType === IMAGE_PNG &&
+      oldProfileAvatar?.path &&
+      oldProfileAvatar.hash === payload.commit_sha &&
+      oldProfileAvatar.url === avatarRevision &&
+      oldProfileAvatar.contentType === IMAGE_PNG
+    ) {
+      return;
+    }
+
+    const base64 = match[1];
+    if (!base64) {
+      return;
+    }
+    const bytes = Uint8Array.from(Buffer.from(base64, 'base64'));
+    if (bytes.byteLength === 0 || bytes.byteLength > 5 * 1024 * 1024) {
+      log.warn('profile picture size rejected', {
+        agentId,
+        bytes: bytes.byteLength,
+      });
+      return;
+    }
+
+    const localAvatar = await writeNewAttachmentData(bytes);
+    const contactAvatar = {
+      ...localAvatar,
+      contentType: IMAGE_PNG,
+      hash: payload.commit_sha ?? undefined,
+      url: avatarRevision,
+    };
+    conversation.set({
+      avatar: contactAvatar,
+      profileAvatar: contactAvatar,
+    });
+    await DataWriter.updateConversation(conversation.attributes);
+
+    const previousAvatars = new Map<string, NonNullable<typeof oldAvatar>>();
+    for (const avatar of [oldAvatar, oldProfileAvatar]) {
+      if (avatar?.path && avatar.path !== localAvatar.path) {
+        previousAvatars.set(avatar.path, avatar);
+      }
+    }
+    await Promise.all(
+      [...previousAvatars.entries()].map(([path, avatar]) =>
+        avatar.url?.startsWith('letta:')
+          ? maybeDeleteAttachmentFile(path)
+          : deleteAvatar(path)
+      )
+    );
+    const formatted = conversation.format();
+    log.info('loaded MemFS profile picture', {
+      agentId,
+      bytes: bytes.byteLength,
+      hasAvatar: formatted.hasAvatar,
+      hasAvatarUrl: Boolean(formatted.avatarUrl),
+    });
+  }
+
   sendText(outgoingModel: MessageModel): Promise<void> {
     if (!LETTA_MODE) {
       return Promise.resolve();
     }
-    const body = String(outgoingModel.get('body') ?? '').trim();
-    this.#turnChain = this.#turnChain
-      .then(() => this.#runTurn(body, outgoingModel))
-      .catch(error => {
-        log.error('turn failed', error);
-      });
+    const conversationId = outgoingModel.get('conversationId') ?? '';
+    const body = (outgoingModel.get('body') ?? '').trim();
+    const previous = this.#turnChains.get(conversationId) ?? Promise.resolve();
+    const next = (async () => {
+      await previous;
+      try {
+        await this.#runTurn(conversationId, body, outgoingModel);
+      } catch (error) {
+        log.error('turn failed', formatError(error));
+      }
+    })();
+    this.#turnChains.set(conversationId, next);
     return Promise.resolve();
   }
 
-  async #runTurn(text: string, outgoingModel: MessageModel): Promise<void> {
-    await this.initialize();
-    if (!this.#session) {
-      this.#markOutgoingFailed(outgoingModel);
-      await this.#injectIncoming(
-        '⚠️ Letta is not configured (missing LETTA_API_KEY).'
-      );
-      return;
+  async #prepareSendMessage(
+    outgoingModel: MessageModel,
+    text: string
+  ): Promise<
+    | {
+        message: SendMessage;
+        imageCount: number;
+        imageBytes: number;
+      }
+    | undefined
+  > {
+    const attachments = outgoingModel.get('attachments') ?? [];
+    if (attachments.length === 0) {
+      return text ? { message: text, imageCount: 0, imageBytes: 0 } : undefined;
+    }
+    if (attachments.length > MAX_IMAGE_ATTACHMENTS) {
+      throw new Error('Too many image attachments');
     }
 
-    if (!text) {
-      this.#markOutgoingDelivered(outgoingModel);
-      return;
-    }
-
-    try {
-      await this.#sendWithRecovery(text);
-    } catch (error) {
-      log.error('session.send failed', error);
-      this.#markOutgoingFailed(outgoingModel);
-      await this.#injectIncoming(`⚠️ Failed to reach Letta: ${error}`);
-      return;
-    }
-
-    this.#markOutgoingDelivered(outgoingModel);
-
-    // Let the SDK's accumulator assemble streamed fragments into stable rows
-    // (typed-by-family merging, otid/uuid keying, replay suppression). We map
-    // each assistant row to one incoming bubble, keyed by the row's stable key.
-    const transcript = createTranscriptAccumulator();
-    const bubbles = new Map<string, MessageModel>();
-    try {
-      for await (const message of this.#session.stream()) {
-        const rows = transcript.apply(message as Parameters<typeof transcript.apply>[0]);
-        await this.#renderRows(rows, bubbles);
-
-        if ((message as { type?: string }).type === 'result') {
-          this.#finalizeTurn(
-            message as {
-              success: boolean;
-              error?: string;
-              errorCode?: string;
-              errorDetail?: string;
+    const typedAttachments = attachments.map(attachment => {
+      const mediaType = String(attachment.contentType ?? '')
+        .split(';', 1)[0]
+        .toLowerCase();
+      if (!isSupportedImageMediaType(mediaType)) {
+        throw new Error('Unsupported attachment type');
+      }
+      if (attachment.size && attachment.size > MAX_IMAGE_BYTES) {
+        throw new Error('Image attachment is too large');
+      }
+      return { attachment, mediaType };
+    });
+    const images = await Promise.all(
+      typedAttachments.map(async ({ attachment, mediaType }) => {
+        const bytes = attachment.data ?? (await readAttachmentData(attachment));
+        if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
+          throw new Error('Image attachment size is invalid');
+        }
+        return {
+          content: {
+            type: 'image' as const,
+            source: {
+              type: 'base64' as const,
+              media_type: mediaType,
+              data: Buffer.from(bytes).toString('base64'),
             },
-            bubbles
+          },
+          bytes: bytes.byteLength,
+        };
+      })
+    );
+    const imageBytes = images.reduce((total, image) => total + image.bytes, 0);
+    if (imageBytes > MAX_TOTAL_IMAGE_BYTES) {
+      throw new Error('Combined image attachments are too large');
+    }
+
+    return {
+      message: [
+        { type: 'text', text: text || '[Image]' },
+        ...images.map(image => image.content),
+      ],
+      imageCount: images.length,
+      imageBytes,
+    };
+  }
+
+  async #runTurn(
+    conversationId: string,
+    text: string,
+    outgoingModel: MessageModel
+  ): Promise<void> {
+    this.#startTyping(conversationId);
+    try {
+      await this.initialize();
+      const contact = this.#contacts.get(conversationId);
+      if (!contact || !this.#client) {
+        this.#markOutgoingFailed(outgoingModel);
+        return;
+      }
+
+      let prepared;
+      try {
+        prepared = await this.#prepareSendMessage(outgoingModel, text);
+      } catch (error) {
+        log.error('message attachment preparation failed', {
+          signalConversationId: conversationId,
+          signalMessageId: outgoingModel.id,
+          attachmentCount: outgoingModel.get('attachments')?.length ?? 0,
+          error: formatError(error),
+        });
+        this.#markOutgoingFailed(outgoingModel, error);
+        return;
+      }
+      if (!prepared) {
+        this.#markOutgoingDelivered(outgoingModel);
+        return;
+      }
+
+      const turnContext = {
+        signalConversationId: conversationId,
+        signalMessageId: outgoingModel.id,
+        agentId: contact.agentId,
+        agentName: contact.name,
+        textLength: text.length,
+        imageCount: prepared.imageCount,
+        imageBytes: prepared.imageBytes,
+      };
+      log.info('turn started', turnContext);
+
+      let session: LettaSession;
+      try {
+        session = await this.#sessionFor(contact);
+        session = await this.#sendWithRecovery(
+          contact,
+          session,
+          prepared.message
+        );
+      } catch (error) {
+        log.error('session.send failed', {
+          ...turnContext,
+          error: formatError(error),
+        });
+        this.#markOutgoingFailed(outgoingModel, error);
+        return;
+      }
+
+      this.#markOutgoingDelivered(outgoingModel);
+
+      const transcript = createTranscriptAccumulator();
+      const bubbles = new Map<string, MessageModel>();
+      try {
+        for await (const message of session.stream()) {
+          const rows = transcript.apply(
+            message as Parameters<typeof transcript.apply>[0]
           );
+          if (
+            bubbles.size === 0 &&
+            rows.some(row => row.kind === 'assistant')
+          ) {
+            this.#setTyping(conversationId, false);
+          }
+          await this.#renderRows(conversationId, rows, bubbles);
+
+          if ((message as { type?: string }).type === 'result') {
+            await this.#finalizeTurn({
+              ...turnContext,
+              result: message as SDKResultMessage,
+              bubbles,
+            });
+          }
+        }
+      } catch (error) {
+        log.error('stream failed', {
+          ...turnContext,
+          error: formatError(error),
+          assistantBubbleCount: bubbles.size,
+        });
+        if (bubbles.size === 0) {
+          this.#markOutgoingFailed(outgoingModel, error);
         }
       }
-    } catch (error) {
-      log.error('stream failed', error);
-      if (bubbles.size === 0) {
-        await this.#injectIncoming(`⚠️ Stream error: ${error}`);
-      }
+    } finally {
+      this.#stopTyping(conversationId);
     }
   }
 
-  // Reconcile the accumulator's current rows against the on-screen bubbles.
-  // v1 renders assistant rows only (reasoning / tool activity are ignored).
+  #startTyping(conversationId: string): void {
+    this.#setTyping(conversationId, true);
+    if (this.#typingRefreshTimers.has(conversationId)) {
+      return;
+    }
+    this.#typingRefreshTimers.set(
+      conversationId,
+      setInterval(() => this.#setTyping(conversationId, true), 10_000)
+    );
+  }
+
+  #stopTyping(conversationId: string): void {
+    const timer = this.#typingRefreshTimers.get(conversationId);
+    if (timer) {
+      clearInterval(timer);
+      this.#typingRefreshTimers.delete(conversationId);
+    }
+    this.#setTyping(conversationId, false);
+  }
+
+  #setTyping(conversationId: string, isTyping: boolean): void {
+    const conversation = window.ConversationController.get(conversationId);
+    if (!conversation) {
+      return;
+    }
+    const senderId = conversation.getServiceId();
+    if (!senderId) {
+      return;
+    }
+    conversation.notifyTyping({
+      isTyping,
+      senderId,
+      fromMe: false,
+      senderDevice: 1,
+    });
+  }
+
+  async #sessionFor(contact: AgentContact): Promise<LettaSession> {
+    const existing = this.#sessions.get(contact.agentId);
+    if (existing) {
+      return existing;
+    }
+    if (!this.#client) {
+      throw new Error('Letta session is not available');
+    }
+
+    let session = contact.lettaConversationId
+      ? (this.#client.resumeSession(
+          contact.lettaConversationId,
+          this.#sessionOptions()
+        ) as unknown as LettaSession)
+      : (this.#client.createSession(
+          contact.agentId,
+          this.#sessionOptions()
+        ) as unknown as LettaSession);
+    let init;
+    try {
+      init = await session.initialize();
+    } catch (error) {
+      if (!contact.lettaConversationId || !isClosedCloudSession(error)) {
+        throw error;
+      }
+      session.close?.();
+      session = this.#client.createSession(
+        contact.agentId,
+        this.#sessionOptions()
+      ) as unknown as LettaSession;
+      init = await session.initialize();
+    }
+    this.#sessions.set(contact.agentId, session);
+    if (
+      init.conversationId !== 'default' &&
+      contact.lettaConversationId !== init.conversationId
+    ) {
+      this.#contacts.set(contact.conversationId, {
+        ...contact,
+        lettaConversationId: init.conversationId,
+      });
+      await this.#persistContacts();
+      log.info('Signal conversation linked to Letta conversation', {
+        agentId: contact.agentId,
+        lettaConversationId: init.conversationId,
+      });
+    }
+    return session;
+  }
+
+  #sessionOptions() {
+    return {
+      permissionMode: 'unrestricted' as const,
+      canUseTool: () => ({ behavior: 'allow' as const }),
+    };
+  }
+
   async #renderRows(
-    rows: readonly TranscriptRow[],
+    conversationId: string,
+    rows: ReadonlyArray<TranscriptRow>,
     bubbles: Map<string, MessageModel>
   ): Promise<void> {
     for (const row of rows) {
@@ -322,11 +1305,13 @@ class LettaService {
         continue;
       }
       const text = row.text ?? '';
+      const formatted = formatLettaMarkdown(text);
       const existing = bubbles.get(row.key);
       if (!existing) {
-        // Reserve the slot synchronously so a burst of rows can't double-create.
         bubbles.set(row.key, undefined as unknown as MessageModel);
-        const model = await this.#injectIncoming(text);
+        // Keep streamed assistant rows in transcript order.
+        // oxlint-disable-next-line no-await-in-loop
+        const model = await this.#injectIncoming(conversationId, text);
         if (model) {
           bubbles.set(row.key, model);
         } else {
@@ -334,82 +1319,134 @@ class LettaService {
         }
         continue;
       }
-      if (String(existing.get('body') ?? '') !== text) {
-        existing.set({ body: text });
-        this.#notifyChanged(existing);
-      }
-    }
-  }
-
-  #finalizeTurn(
-    result: {
-      success: boolean;
-      error?: string;
-      errorCode?: string;
-      errorDetail?: string;
-    },
-    bubbles: Map<string, MessageModel>
-  ): void {
-    if (!result.success && bubbles.size === 0) {
-      const detail =
-        result.errorDetail ||
-        result.error ||
-        result.errorCode ||
-        'unknown error';
-      drop(this.#injectIncoming(`⚠️ Agent error: ${detail}`));
-    }
-    // Persist the final state of every rendered bubble.
-    for (const model of bubbles.values()) {
-      if (model) {
-        drop(window.MessageCache.saveMessage(model, { forceSave: true }));
-      }
-    }
-  }
-
-  async #sendWithRecovery(text: string): Promise<void> {
-    if (!this.#session) {
-      return;
-    }
-    try {
-      await this.#session.send(text);
-    } catch (error) {
-      // A cold cloud sandbox can expire between turns; rebuild the session once.
       if (
-        error instanceof CloudManagedSandboxExpiredError &&
-        this.#client &&
-        this.#agentId
+        (existing.get('body') ?? '') !== formatted.body ||
+        !bodyRangesEqual(existing.get('bodyRanges'), formatted.bodyRanges)
       ) {
+        existing.set({
+          body: formatted.body,
+          bodyRanges: formatted.bodyRanges,
+        });
+        this.#notifyChanged(conversationId, existing);
+      }
+    }
+  }
+
+  async #finalizeTurn({
+    signalConversationId,
+    signalMessageId,
+    agentId,
+    agentName,
+    textLength,
+    result,
+    bubbles,
+  }: {
+    signalConversationId: string;
+    signalMessageId: string;
+    agentId: string;
+    agentName: string;
+    textLength: number;
+    result: SDKResultMessage;
+    bubbles: Map<string, MessageModel>;
+  }): Promise<void> {
+    const diagnostic = {
+      signalConversationId,
+      signalMessageId,
+      agentId,
+      agentName,
+      textLength,
+      success: result.success,
+      stopReason: result.stopReason,
+      errorCode: result.errorCode,
+      approvalConflict: result.approvalConflict,
+      recoverable: result.recoverable,
+      recoveryAttempts: result.recoveryAttempts,
+      durationMs: result.durationMs,
+      totalCostUsd: result.totalCostUsd,
+      lettaConversationId: result.conversationId,
+      runIds: result.runIds,
+      assistantBubbleCount: bubbles.size,
+    };
+    if (result.success) {
+      this.#hideSendError();
+      log.info('turn completed', diagnostic);
+    } else {
+      log.error('turn failed', diagnostic);
+    }
+
+    if (!result.success) {
+      const message = visibleSendError(
+        result.errorDetail ?? result.error ?? result.errorCode
+      );
+      const outgoingModel = window.MessageCache.getById(signalMessageId);
+      if (bubbles.size === 0 && outgoingModel) {
+        this.#markOutgoingFailed(outgoingModel, message);
+      } else {
+        this.#showSendError(message);
+      }
+    }
+    await Promise.all(
+      [...bubbles.values()]
+        .filter(model => Boolean(model))
+        .map(model => window.MessageCache.saveMessage(model))
+    );
+    const conversation =
+      window.ConversationController.get(signalConversationId);
+    if (conversation) {
+      await conversation.updateLastMessage();
+    }
+    log.info('local turn persisted', {
+      signalConversationId,
+      agentId,
+      assistantBubbleCount: bubbles.size,
+    });
+  }
+
+  async #sendWithRecovery(
+    contact: AgentContact,
+    session: LettaSession,
+    message: SendMessage
+  ): Promise<LettaSession> {
+    try {
+      await session.send(message);
+      return session;
+    } catch (error) {
+      if (isClosedCloudSession(error) && this.#client) {
         log.info('sandbox expired; rebuilding session');
-        this.#session = this.#client.resumeSession(
-          this.#agentId
+        const next = this.#client.resumeSession(
+          contact.lettaConversationId ?? contact.agentId,
+          this.#sessionOptions()
         ) as unknown as LettaSession;
-        await this.#session.send(text);
-        return;
+        this.#sessions.set(contact.agentId, next);
+        await next.send(message);
+        return next;
       }
       throw error;
     }
   }
 
-  // ---- Receive (incoming bubble injection) -------------------------------
-
-  async #injectIncoming(body: string): Promise<MessageModel | undefined> {
-    const conversation = this.#getConversation();
+  async #injectIncoming(
+    conversationId: string,
+    body: string
+  ): Promise<MessageModel | undefined> {
+    const conversation = window.ConversationController.get(conversationId);
     if (!conversation) {
       log.error('injectIncoming: no conversation');
       return undefined;
     }
     const now = Date.now();
+    const formatted = formatLettaMarkdown(body);
     const attributes = {
       ...generateMessageId(incrementMessageCounter()),
       conversationId: conversation.id,
       type: 'incoming' as const,
-      body,
+      body: formatted.body,
+      bodyRanges: formatted.bodyRanges,
       sent_at: now,
       timestamp: now,
       received_at_ms: now,
-      // Must equal the conversation's serviceId or it renders as an outgoing
-      // (self) bubble.
-      sourceServiceId: LETTA_PEER_ACI,
+      sourceServiceId: conversation.getServiceId(),
+      sourceDevice: 1,
       readStatus: ReadStatus.Read,
       seenStatus: SeenStatus.Seen,
     } as unknown as MessageAttributesType;
@@ -417,17 +1454,47 @@ class LettaService {
     const model = window.MessageCache.register(new MessageModel(attributes));
     await window.MessageCache.saveMessage(model, { forceSave: true });
     await conversation.onNewMessage(model);
+    await conversation.updateLastMessage();
     return model;
   }
 
-  // ---- Outgoing status ---------------------------------------------------
-
   #markOutgoingDelivered(model: MessageModel): void {
+    model.set({ errors: undefined });
     this.#stampSendState(model, SendStatus.Delivered);
   }
 
-  #markOutgoingFailed(model: MessageModel): void {
+  #markOutgoingFailed(model: MessageModel, error?: unknown): void {
+    const message =
+      typeof error === 'string' && error.startsWith('Message not sent.')
+        ? error
+        : visibleSendError(error);
+    model.set({
+      errors: [
+        {
+          name: 'LettaSendError',
+          message,
+        },
+      ],
+    });
     this.#stampSendState(model, SendStatus.Failed);
+    this.#showSendError(message);
+  }
+
+  #showSendError(message: string): void {
+    const toast: AnyToast = {
+      toastType: ToastType.LettaSendError,
+      parameters: { message },
+    };
+    this.#visibleSendErrorToast = toast;
+    window.reduxActions.toast.showToast(toast);
+  }
+
+  #hideSendError(): void {
+    if (!this.#visibleSendErrorToast) {
+      return;
+    }
+    window.reduxActions.toast.hideToast(this.#visibleSendErrorToast);
+    this.#visibleSendErrorToast = undefined;
   }
 
   #stampSendState(model: MessageModel, status: SendStatus): void {
@@ -439,33 +1506,24 @@ class LettaService {
     const updated: Record<string, { status: SendStatus; updatedAt: number }> =
       {};
     const keys = Object.keys(existing);
-    if (keys.length === 0 && this.#conversationId) {
-      keys.push(this.#conversationId);
+    const conversationId = model.get('conversationId') ?? '';
+    if (keys.length === 0 && conversationId) {
+      keys.push(conversationId);
     }
     for (const key of keys) {
       updated[key] = { status, updatedAt: now };
     }
     model.set({ sendStateByConversationId: updated });
-    drop(window.MessageCache.saveMessage(model, { forceSave: true }));
-    this.#notifyChanged(model);
+    drop(window.MessageCache.saveMessage(model));
+    if (conversationId) {
+      this.#notifyChanged(conversationId, model);
+    }
   }
 
-  // ---- Helpers -----------------------------------------------------------
-
-  #getConversation(): ConversationModel | undefined {
-    if (!this.#conversationId) {
-      return undefined;
-    }
-    return window.ConversationController.get(this.#conversationId);
-  }
-
-  #notifyChanged(model: MessageModel): void {
-    if (!this.#conversationId) {
-      return;
-    }
+  #notifyChanged(conversationId: string, model: MessageModel): void {
     window.reduxActions.conversations.messageChanged(
       model.id,
-      this.#conversationId,
+      conversationId,
       model.attributes
     );
   }

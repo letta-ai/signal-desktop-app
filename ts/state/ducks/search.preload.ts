@@ -44,6 +44,7 @@ import {
 } from './conversations.preload.ts';
 import { removeDiacritics } from '../../util/removeDiacritics.std.ts';
 import { createLogger } from '../../logging/log.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { searchConversationTitles } from '../../util/searchConversationTitles.std.ts';
 import { isDirectConversation } from '../../util/whatTypeOfConversation.dom.ts';
 import { isConversationSMSOnly } from '../../util/isConversationSMSOnly.std.ts';
@@ -485,40 +486,76 @@ const doSearch = debounce(
           selectedConversationId
             ? state.conversations.conversationLookup[selectedConversationId]
             : undefined;
-        const { conversationIds, contactIds } =
-          await queryConversationsAndContacts(query, {
-            filterByUnread,
-            ourConversationId,
-            noteToSelf,
-            regionCode,
-            allConversations,
-            /**
-             * If filter by unread is enabled, the selected conversation
-             * is read, and it's already in the list, we don't want to remove it
-             * from the list. It will be removed when the user switches to
-             * a different conversation.
-             */
-            conversationToInject:
-              filterByUnread &&
-              selectedConversationId &&
-              selectedConversation &&
-              state.search.conversationIds.includes(selectedConversationId) &&
-              !isConversationUnread(selectedConversation, {
-                activeProfile: undefined,
-                includeMuted: 'force-include',
-              })
-                ? selectedConversation
-                : undefined,
-          });
+        const publishResults = async (
+          searchConversations: ReadonlyArray<ConversationType>,
+          forcedIds: ReadonlyArray<string> = []
+        ) => {
+          const { conversationIds, contactIds } =
+            await queryConversationsAndContacts(query, {
+              filterByUnread,
+              ourConversationId,
+              noteToSelf,
+              regionCode,
+              allConversations: searchConversations,
+              /**
+               * If filter by unread is enabled, the selected conversation
+               * is read, and it's already in the list, we don't want to remove it
+               * from the list. It will be removed when the user switches to
+               * a different conversation.
+               */
+              conversationToInject:
+                filterByUnread &&
+                selectedConversationId &&
+                selectedConversation &&
+                state.search.conversationIds.includes(selectedConversationId) &&
+                !isConversationUnread(selectedConversation, {
+                  activeProfile: undefined,
+                  includeMuted: 'force-include',
+                })
+                  ? selectedConversation
+                  : undefined,
+            });
 
-        dispatch({
-          type: 'SEARCH_DISCUSSIONS_RESULTS_FULFILLED',
-          payload: {
-            conversationIds,
-            contactIds,
-            query,
-          },
-        });
+          for (const id of forcedIds) {
+            if (conversationIds.includes(id) || contactIds.includes(id)) {
+              continue;
+            }
+            const conversation = searchConversations.find(
+              item => item.id === id
+            );
+            if (conversation?.lastMessage) {
+              conversationIds.unshift(id);
+            } else {
+              contactIds.unshift(id);
+            }
+          }
+
+          dispatch({
+            type: 'SEARCH_DISCUSSIONS_RESULTS_FULFILLED',
+            payload: {
+              conversationIds,
+              contactIds,
+              query,
+            },
+          });
+        };
+
+        // Existing agent contacts should match immediately. Remote search can
+        // materialize agents that are not in the local list, then refresh it.
+        await publishResults(allConversations);
+        if (LETTA_MODE && query.trim() && window.lettaService) {
+          try {
+            const agentConversationIds =
+              await window.lettaService.searchAgents(query);
+            const latest = window.reduxStore.getState();
+            await publishResults(
+              getAllConversations(latest),
+              agentConversationIds
+            );
+          } catch (error) {
+            log.warn('letta search failed', error);
+          }
+        }
       })();
     }
   },
@@ -613,13 +650,31 @@ async function queryConversationsAndContacts(
     return !messagesDeleted;
   });
 
-  const searchResults: Array<ConversationType> = filterAndSortConversations(
-    visibleConversations,
-    normalizedQuery,
-    regionCode,
-    filterByUnread,
-    conversationToInject
-  );
+  const searchResults: Array<ConversationType> = LETTA_MODE
+    ? visibleConversations
+        .filter(conversation => {
+          const values = [
+            conversation.title,
+            conversation.name,
+            conversation.profileName,
+            conversation.systemGivenName,
+            conversation.serviceId,
+          ];
+          const needle = normalizedQuery.toLocaleLowerCase();
+          return values.some(value =>
+            value
+              ? removeDiacritics(value).toLocaleLowerCase().includes(needle)
+              : false
+          );
+        })
+        .sort((left, right) => left.title.localeCompare(right.title))
+    : filterAndSortConversations(
+        visibleConversations,
+        normalizedQuery,
+        regionCode,
+        filterByUnread,
+        conversationToInject
+      );
 
   // Split into two groups - active conversations and items just from address book
   let conversationIds: Array<string> = [];

@@ -1,11 +1,9 @@
 # Signal Desktop × Letta — fork notes
 
-This fork replaces Signal's protocol backend with the **Letta Agent SDK**. The
-Signal UI is preserved, but there is exactly **one** conversation and it is
-bound to a Letta agent's *default conversation*. You type in Signal's composer,
-the text goes to the agent via the SDK, and the agent's streamed reply renders
-as an incoming message — a single-threaded, "one contact" feel like chat.letta.com,
-with Signal's look.
+This fork replaces Signal's protocol backend with the **Letta Agent SDK**.
+All Letta agents are available under **New chat** and search. The left pane shows
+only agents with a started chat. Each contact uses a dedicated persistent Letta
+conversation. Replies stream in as incoming bubbles.
 
 Everything is gated behind `LETTA_MODE` (on by default; set `LETTA_MODE=0` to run
 stock Signal).
@@ -20,32 +18,41 @@ pnpm install
 pnpm generate
 
 # 3. launch with your Letta Cloud API key in the environment
-LETTA_API_KEY=sk-let-... pnpm start
+COMPANY_LETTA_API_KEY=sk-let-... pnpm start
 ```
 
 Optional env:
 
 - `LETTA_MODE=0` — disable the fork, run stock Signal.
-- `LETTA_AGENT_MODEL=anthropic/claude-opus-4-8` — model for the agent created on
-  first launch (default shown).
+- `LETTA_API_KEY` — overrides `COMPANY_LETTA_API_KEY` when both are set.
+- `LETTA_AGENT_MODEL=anthropic/claude-opus-4-8` — model for a fallback agent if
+  the account has none.
 
-On first launch the app creates a hidden Letta agent and stores its id in
-Signal's local storage (`lettaAgentId`); every later launch resumes the same
-agent's default conversation, so the thread persists.
+The app caches agent contacts and their dedicated Letta conversation IDs in
+Signal's isolated local profile. Later launches restore the same contacts and
+conversations before refreshing the agent list.
 
 ## What changed
 
 ### New files
+
 - `ts/util/lettaMode.preload.ts` — `LETTA_MODE` flag, API key, fixed local
   identity UUIDs, storage keys.
-- `ts/services/letta.preload.ts` — the whole integration: SDK client/session
-  lifecycle, agent-id persistence, boot identity seeding, single-conversation
-  bootstrap + auto-select, the send turn-loop, and streamed incoming-bubble
-  injection.
+- `ts/util/lettaMode.std.ts` — main-process `LETTA_MODE`; used to rename
+  the Electron app before `safeStorage` so macOS Keychain never asks for
+  production Signal's `Signal Safe Storage` item.
+- `ts/services/letta.preload.ts` — SDK client and session lifecycle, boot identity
+  seeding, cached agent contacts, dedicated conversations, remote history import,
+  MemFS avatars, typing state, the send turn-loop, and streamed incoming bubbles.
 - `.npmrc` — `verify-deps-before-run=false` (the local-tarball SDK dependency
   changes pnpm's allowBuilds set, which otherwise blocks scripts).
 
 ### Edited files
+
+- `app/startup_config.main.ts` — under `LETTA_MODE`, `app.setName('Signal Letta')`
+  before any `safeStorage` use so the Keychain item is `Signal Letta Safe Storage`.
+- `app/main.main.ts` — skip Electron `safeStorage` for the SQL key under
+  `LETTA_MODE` (plaintext key stays in the isolated `Signal-development` profile).
 - `ts/background.preload.ts`
   - Seeds a valid-but-fabricated local identity (`setAciAndDeviceId` + mark
     registration done) at the top of `start()` so the startup gate opens the
@@ -59,8 +66,9 @@ agent's default conversation, so the thread persists.
     stray auth error must never wipe the fake identity).
 - `ts/models/conversations.preload.ts`
   - Send seam in `enqueueMessageForSend` (`~:4392`): under `LETTA_MODE` the
-    outgoing message is persisted and its text forwarded to
-    `window.lettaService.sendText(model)` instead of the Signal transport job.
+    outgoing message is persisted and its text and image attachments are
+    forwarded to `window.lettaService.sendText(model)` instead of the Signal
+    transport job.
     The optimistic outgoing bubble is untouched.
 - `ts/window.d.ts` — declares `window.lettaService`.
 - `.oxlint/rules/enforceFileSuffix.mjs` — categorizes `@letta-ai/letta-agent-sdk`
@@ -68,10 +76,11 @@ agent's default conversation, so the thread persists.
 
 ## How a message round-trips
 
-1. **Send** — composer → `enqueueMessageForSend` builds + inserts the optimistic
-   outgoing bubble (unchanged), then the seam calls `lettaService.sendText()`.
-   The service `session.send(text)`s to the agent's default conversation and
-   marks the outgoing bubble delivered.
+1. **Send** — composer → `enqueueMessageForSend` builds and inserts the outgoing
+   bubble, then the seam calls `lettaService.sendText()`. The service sends to
+   the contact's dedicated conversation. It marks success as delivered. It uses
+   Signal's native failed-send status and retry action for failures. It does not
+   create an incoming error bubble.
 2. **Receive** — the service iterates `session.stream()` and folds each message
    through the SDK's `createTranscriptAccumulator()` (the canonical way to turn
    streamed fragments into stable rows — typed-by-family merging, otid/uuid
@@ -83,6 +92,7 @@ agent's default conversation, so the thread persists.
    `stream()` drains one shared queue).
 
 ## Architecture choices
+
 - Integration lives in the **preload** bundle — that's where Signal's whole
   React/Redux app runs, with `window.reduxActions`, `ConversationController`,
   `MessageCache`, `storage`, plus Node + DOM.
@@ -98,12 +108,15 @@ agent's default conversation, so the thread persists.
   delete `vendor/`.
 
 ## Known limitations / v1 scope cuts
-- Text only — no attachments, quotes, edits, or reactions forwarded to the agent.
+
+- PNG, JPEG, GIF, and WebP images are forwarded with an optional caption. Other
+  attachments, quotes, edits, and reactions are not forwarded.
 - Reasoning and tool-call/tool-result stream events are ignored (not rendered).
 - No approval flow (`canUseTool` unset); an agent turn that stops on a required
   approval would hang the stream. Keep the agent's tools non-approval-gated.
-- No history import on first boot (the thread starts empty locally even if the
-  agent's default conversation already has messages server-side).
-- The left-pane conversation list UI is left intact; the fork just guarantees a
-  single visible conversation rather than removing the list component.
-- Outgoing status is marked "delivered" optimistically when `send()` hands off.
+- Remote user and assistant messages are imported when a dedicated conversation
+  has no local history. The first import is limited to 100 remote messages.
+- The left pane shows chats with a message, saved draft, or dedicated Letta
+  conversation. Unused contacts remain available under **New chat** and search.
+- A send is marked delivered after `session.send()` succeeds. A failed send keeps
+  one outgoing bubble with Signal's native `Send failed` and `Retry Send` UI.
