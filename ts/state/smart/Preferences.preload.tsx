@@ -123,6 +123,7 @@ import { isLocalBackupsEnabled } from '../../util/isLocalBackupsEnabled.preload.
 import { getBackupKeyHash } from '../../services/backups/crypto.preload.ts';
 import { Emoji } from '../../axo/emoji.std.ts';
 import { AppProvider } from '../../windows/AppProvider.dom.tsx';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 const DEFAULT_NOTIFICATION_SETTING = 'message';
 
@@ -308,7 +309,16 @@ export function SmartPreferences(): JSX.Element | null {
   const validateBackup = () => backupsService._internalValidate();
   const pickLocalBackupFolder = () => backupsService.pickLocalBackupFolder();
 
-  const doDeleteAllData = () => renderClearingDataView();
+  const doDeleteAllData = () => {
+    drop(
+      (async () => {
+        if (LETTA_MODE) {
+          await window.IPC.clearLettaTranscriptionConfiguration();
+        }
+        renderClearingDataView();
+      })()
+    );
+  };
   const refreshCloudBackupStatus =
     backupsService.throttledFetchCloudBackupStatus;
   const refreshBackupSubscriptionStatus =

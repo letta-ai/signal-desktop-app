@@ -109,6 +109,8 @@ const IPC: IPCType = {
   openSystemMediaPermissions: mediaType =>
     ipc.invoke('open-system-media-permissions', mediaType),
   getMediaPermissions: () => ipc.invoke('settings:get:mediaPermissions'),
+  getLettaTranscriptionConfig: () =>
+    ipc.invoke('letta-transcription:get-config'),
   getMediaCameraPermissions: () =>
     ipc.invoke('settings:get:mediaCameraPermissions'),
   logAppLoadedEvent: ({ processedCount }) =>
@@ -160,6 +162,16 @@ const IPC: IPCType = {
     ipc.invoke('settings:set:mediaPermissions', value),
   setMediaCameraPermissions: (value: boolean) =>
     ipc.invoke('settings:set:mediaCameraPermissions', value),
+  setLettaTranscriptionProvider: provider =>
+    ipc.invoke('letta-transcription:set-provider', provider),
+  setLettaTranscriptionKey: (provider, apiKey) =>
+    ipc.invoke('letta-transcription:set-key', { provider, apiKey }),
+  clearLettaTranscriptionKey: provider =>
+    ipc.invoke('letta-transcription:clear-key', provider),
+  clearLettaTranscriptionConfiguration: () =>
+    ipc.invoke('letta-transcription:clear-configuration'),
+  transcribeLettaVoiceMemo: audio =>
+    ipc.invoke('letta-transcription:transcribe', audio),
   showSettings: () => ipc.send('show-settings'),
   showWindow: () => {
     log.info('show window');

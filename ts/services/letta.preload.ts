@@ -51,6 +51,7 @@ import {
   LETTA_LEGACY_PEER_ACI,
 } from '../util/lettaMode.std.ts';
 import { lettaNodeFetch } from '../util/lettaNodeFetch.node.ts';
+import { isVoiceMessage } from '../util/Attachment.std.ts';
 
 const log = createLogger('letta');
 const LETTA_API_BASE_URL = 'https://api.letta.com';
@@ -146,6 +147,34 @@ function visibleSendError(error?: unknown): string {
   }
   if (detail.includes('Too many image attachments')) {
     return `Message not sent. Attach no more than ${MAX_IMAGE_ATTACHMENTS} images.`;
+  }
+  if (detail.includes('TRANSCRIPTION_KEY_MISSING')) {
+    return 'Message not sent. Add a key for the selected transcription service in Settings.';
+  }
+  if (
+    detail.includes('TRANSCRIPTION_SECURE_STORAGE_UNAVAILABLE') ||
+    detail.includes('TRANSCRIPTION_KEY_UNREADABLE')
+  ) {
+    return 'Message not sent. Secure transcription key storage is unavailable.';
+  }
+  if (detail.includes('TRANSCRIPTION_AUTH')) {
+    return 'Message not sent. The transcription service rejected the saved key.';
+  }
+  if (detail.includes('TRANSCRIPTION_RATE_LIMIT')) {
+    return 'Message not sent. The transcription service rate limit was reached.';
+  }
+  if (detail.includes('TRANSCRIPTION_AUDIO_INVALID')) {
+    return 'Message not sent. The voice memo could not be transcribed.';
+  }
+  if (detail.includes('TRANSCRIPTION_TIMEOUT')) {
+    return 'Message not sent. Voice memo transcription timed out.';
+  }
+  if (
+    detail.includes('TRANSCRIPTION_NETWORK') ||
+    detail.includes('TRANSCRIPTION_SERVICE') ||
+    detail.includes('TRANSCRIPTION_EMPTY')
+  ) {
+    return 'Message not sent. The transcription service did not return text.';
   }
   if (detail.includes('Unsupported attachment type')) {
     return 'Message not sent. Use PNG, JPEG, GIF, or WebP images.';
@@ -1042,6 +1071,7 @@ class LettaService {
   ): Promise<
     | {
         message: SendMessage;
+        inputTextLength: number;
         imageCount: number;
         imageBytes: number;
       }
@@ -1049,7 +1079,38 @@ class LettaService {
   > {
     const attachments = outgoingModel.get('attachments') ?? [];
     if (attachments.length === 0) {
-      return text ? { message: text, imageCount: 0, imageBytes: 0 } : undefined;
+      return text
+        ? {
+            message: text,
+            inputTextLength: text.length,
+            imageCount: 0,
+            imageBytes: 0,
+          }
+        : undefined;
+    }
+    const voiceMemos = attachments.filter(isVoiceMessage);
+    if (voiceMemos.length > 0) {
+      if (voiceMemos.length !== 1 || attachments.length !== 1) {
+        throw new Error('Voice memo must be the only attachment');
+      }
+      const attachment = voiceMemos[0];
+      if (!attachment) {
+        throw new Error('Voice memo attachment is missing');
+      }
+      const mediaType = String(attachment.contentType ?? '')
+        .split(';', 1)[0]
+        .toLowerCase();
+      const bytes = attachment.data ?? (await readAttachmentData(attachment));
+      const transcript = await window.IPC.transcribeLettaVoiceMemo({
+        data: bytes,
+        contentType: mediaType,
+      });
+      return {
+        message: transcript,
+        inputTextLength: transcript.length,
+        imageCount: 0,
+        imageBytes: 0,
+      };
     }
     if (attachments.length > MAX_IMAGE_ATTACHMENTS) {
       throw new Error('Too many image attachments');
@@ -1096,6 +1157,7 @@ class LettaService {
         { type: 'text', text: text || '[Image]' },
         ...images.map(image => image.content),
       ],
+      inputTextLength: text.length,
       imageCount: images.length,
       imageBytes,
     };
@@ -1138,7 +1200,7 @@ class LettaService {
         signalMessageId: outgoingModel.id,
         agentId: contact.agentId,
         agentName: contact.name,
-        textLength: text.length,
+        textLength: prepared.inputTextLength,
         imageCount: prepared.imageCount,
         imageBytes: prepared.imageBytes,
       };
@@ -1530,3 +1592,4 @@ class LettaService {
 }
 
 export const lettaService = new LettaService();
+export type LettaServiceType = typeof lettaService;

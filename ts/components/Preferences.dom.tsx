@@ -104,6 +104,7 @@ import type { PreferredBadgeSelectorType } from '../state/selectors/badges.prelo
 import { Emoji } from '../axo/emoji.std.ts';
 import { AxoConfirmDialog } from '../axo/AxoConfirmDialog.dom.tsx';
 import { LETTA_MODE } from '../util/lettaMode.std.ts';
+import { PreferencesTranscription } from './PreferencesTranscription.dom.tsx';
 
 const { isNumber, noop, partition } = lodash;
 
@@ -113,6 +114,7 @@ const LETTA_SETTINGS_PAGES = new Set<SettingsPage>([
   SettingsPage.ChatColor,
   SettingsPage.Chats,
   SettingsPage.Notifications,
+  SettingsPage.Transcription,
 ]);
 
 type CheckboxChangeHandlerType = (value: boolean) => unknown;
@@ -1747,6 +1749,14 @@ export function Preferences({
         title={i18n('icu:Preferences__button--notifications')}
       />
     );
+  } else if (settingsLocation.page === SettingsPage.Transcription) {
+    content = (
+      <PreferencesContent
+        contents={<PreferencesTranscription />}
+        contentsRef={settingsPaneRef}
+        title="Transcription"
+      />
+    );
   } else if (settingsLocation.page === SettingsPage.Privacy) {
     const isCustomDisappearingMessageValue =
       !DEFAULT_DURATIONS_SET.has(universalExpireTimer);
@@ -2799,6 +2809,22 @@ export function Preferences({
               >
                 {i18n('icu:Preferences__button--notifications')}
               </button>
+              {LETTA_MODE ? (
+                <button
+                  type="button"
+                  className={classNames({
+                    Preferences__button: true,
+                    'Preferences__button--transcription': true,
+                    'Preferences__button--selected':
+                      settingsLocation.page === SettingsPage.Transcription,
+                  })}
+                  onClick={() =>
+                    setSettingsLocation({ page: SettingsPage.Transcription })
+                  }
+                >
+                  Transcription
+                </button>
+              ) : null}
               {!LETTA_MODE && (
                 <>
                   <button

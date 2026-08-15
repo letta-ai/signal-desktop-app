@@ -25,6 +25,12 @@ import type { PropsPreloadType as PreferencesPropsType } from './components/Pref
 import type { WindowsNotificationData } from './services/notifications.preload.ts';
 import type { QueryStatsOptions } from './sql/main.main.ts';
 import type { SocketStatuses } from './textsecure/SocketManager.preload.ts';
+import type { LettaServiceType } from './services/letta.preload.ts';
+import type {
+  LettaTranscriptionAudio,
+  LettaTranscriptionConfig,
+  LettaTranscriptionProvider,
+} from './types/LettaTranscription.std.ts';
 
 export type IPCType = {
   addSetupMenuItems: () => void;
@@ -45,6 +51,7 @@ export type IPCType = {
     mediaType: 'microphone' | 'camera' | 'screenCapture'
   ) => Promise<void>;
   getMediaPermissions: () => Promise<boolean | undefined>;
+  getLettaTranscriptionConfig: () => Promise<LettaTranscriptionConfig>;
   whenWindowVisible: () => Promise<void>;
   logAppLoadedEvent?: (options: { processedCount?: number }) => void;
   readyForUpdates: () => void;
@@ -54,6 +61,18 @@ export type IPCType = {
   setBadge: (badge: number | 'marked-unread') => void;
   setMediaPermissions: (value: boolean) => Promise<void>;
   setMediaCameraPermissions: (value: boolean) => Promise<void>;
+  setLettaTranscriptionProvider: (
+    provider: LettaTranscriptionProvider
+  ) => Promise<LettaTranscriptionConfig>;
+  setLettaTranscriptionKey: (
+    provider: LettaTranscriptionProvider,
+    apiKey: string
+  ) => Promise<LettaTranscriptionConfig>;
+  clearLettaTranscriptionKey: (
+    provider: LettaTranscriptionProvider
+  ) => Promise<LettaTranscriptionConfig>;
+  clearLettaTranscriptionConfiguration: () => Promise<void>;
+  transcribeLettaVoiceMemo: (audio: LettaTranscriptionAudio) => Promise<string>;
   setMenuBarVisibility: (value: boolean) => void;
   showDebugLog: (options?: { mode?: 'submit' | 'close' }) => void;
   showCallDiagnostic: () => void;
@@ -185,7 +204,7 @@ declare global {
     MessageCache: MessageCache;
     Whisper: WhisperType;
     // Letta fork integration service (see ts/services/letta.preload.ts).
-    lettaService?: typeof import('./services/letta.preload.ts').lettaService;
+    lettaService?: LettaServiceType;
     // Note: used in background.html, and not type-checked
     startApp: () => void;
 
