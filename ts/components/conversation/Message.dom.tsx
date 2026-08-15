@@ -33,6 +33,7 @@ import { ReadStatus } from '../../messages/MessageReadStatus.std.ts';
 import { Avatar, AvatarSize } from '../Avatar.dom.tsx';
 import { AvatarSpacer } from '../AvatarSpacer.dom.tsx';
 import { MessageBodyReadMore } from './MessageBodyReadMore.dom.tsx';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { MessageMetadata } from './MessageMetadata.dom.tsx';
 import { MessageTextMetadataSpacer } from './MessageTextMetadataSpacer.dom.tsx';
 import { ImageGrid } from './ImageGrid.dom.tsx';
@@ -2501,6 +2502,7 @@ export class Message extends PureComponent<Props, State> {
             bodyRanges={bodyRanges}
             direction={direction}
             disableLinks={!this.#areLinksEnabled()}
+            disableReadMore={LETTA_MODE && direction === 'incoming'}
             displayLimit={displayLimit}
             i18n={i18n}
             id={id}
@@ -3409,7 +3411,14 @@ export class Message extends PureComponent<Props, State> {
     }
 
     return (
-      <div className="module-message__container-outer">
+      <div
+        className={classNames(
+          'module-message__container-outer',
+          LETTA_MODE && direction === 'incoming'
+            ? 'module-message__container-outer--letta-agent'
+            : null
+        )}
+      >
         {maybeWrapWithContextMenu(
           // the keyboard handler is a level higher in hierarchy due to selection
           //  oxlint-disable-next-line jsx-a11y/click-events-have-key-events

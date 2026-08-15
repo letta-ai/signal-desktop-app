@@ -34,6 +34,11 @@ const external = [
   // Electron's internal module
   'original-fs',
 
+  // Node builtins used by the Letta fork from unsandboxed preload.
+  'node:http',
+  'node:https',
+  'node:url',
+
   // Uses fast-glob and dynamic requires
   './preload_test.preload.ts',
 ];

@@ -73,6 +73,7 @@ export enum SettingsPage {
   Chats = 'Chats',
   Calls = 'Calls',
   Notifications = 'Notifications',
+  Transcription = 'Transcription',
   Privacy = 'Privacy',
   DataUsage = 'DataUsage',
   Backups = 'Backups',

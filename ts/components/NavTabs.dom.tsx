@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import type { Key, ReactNode, JSX } from 'react';
+import { useEffect } from 'react';
 import { Tabs, TabList, Tab, TabPanel } from 'react-aria-components';
 import classNames from 'classnames';
 import type { LocalizerType } from '../types/Util.std.ts';
@@ -10,6 +11,7 @@ import type { Location } from '../types/Nav.std.ts';
 import { Tooltip, TooltipPlacement } from './Tooltip.dom.tsx';
 import { Theme } from '../util/theme.std.ts';
 import type { UnreadStats } from '../util/countUnreadStats.std.ts';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 
 type NavTabsItemBadgesProps = Readonly<{
   i18n: LocalizerType;
@@ -224,16 +226,41 @@ export function NavTabs({
   unreadConversationsStats,
   unreadStoriesCount,
 }: NavTabsProps): JSX.Element {
+  const visibleSelectedNavTab =
+    LETTA_MODE &&
+    (selectedNavTab === NavTab.Calls || selectedNavTab === NavTab.Stories)
+      ? NavTab.Chats
+      : selectedNavTab;
+
+  useEffect(() => {
+    if (
+      LETTA_MODE &&
+      (selectedNavTab === NavTab.Calls || selectedNavTab === NavTab.Stories)
+    ) {
+      onChangeLocation({
+        tab: NavTab.Chats,
+        details: { conversationId: undefined },
+      });
+    }
+  }, [onChangeLocation, selectedNavTab]);
+
   function handleSelectionChange(key: Key) {
     const tab = key as NavTab;
     if (tab === NavTab.Settings) {
-      onChangeLocation({
-        tab: NavTab.Settings,
-        details: {
-          page: SettingsPage.Profile,
-          state: ProfileEditorPage.None,
-        },
-      });
+      onChangeLocation(
+        LETTA_MODE
+          ? {
+              tab: NavTab.Settings,
+              details: { page: SettingsPage.General },
+            }
+          : {
+              tab: NavTab.Settings,
+              details: {
+                page: SettingsPage.Profile,
+                state: ProfileEditorPage.None,
+              },
+            }
+      );
     } else if (tab === NavTab.Chats) {
       onChangeLocation({
         tab: NavTab.Chats,
@@ -250,7 +277,7 @@ export function NavTabs({
     <Tabs
       orientation="vertical"
       className="NavTabs__Container"
-      selectedKey={selectedNavTab}
+      selectedKey={visibleSelectedNavTab}
       onSelectionChange={handleSelectionChange}
     >
       <nav
@@ -277,32 +304,36 @@ export function NavTabs({
             navTabClassName="NavTabs__Item--Chats"
             unreadStats={unreadConversationsStats}
           />
-          <NavTabsItem
-            i18n={i18n}
-            id={NavTab.Calls}
-            label={i18n('icu:NavTabs__ItemLabel--Calls')}
-            iconClassName="NavTabs__ItemIcon--Calls"
-            navTabClassName="NavTabs__Item--Calls"
-            unreadStats={{
-              unreadCount: unreadCallsCount,
-              unreadMentionsCount: 0,
-              readChatsMarkedUnreadCount: 0,
-            }}
-          />
-          {storiesEnabled && (
-            <NavTabsItem
-              i18n={i18n}
-              id={NavTab.Stories}
-              label={i18n('icu:NavTabs__ItemLabel--Stories')}
-              iconClassName="NavTabs__ItemIcon--Stories"
-              hasError={hasFailedStorySends}
-              navTabClassName="NavTabs__Item--Stories"
-              unreadStats={{
-                unreadCount: unreadStoriesCount,
-                unreadMentionsCount: 0,
-                readChatsMarkedUnreadCount: 0,
-              }}
-            />
+          {!LETTA_MODE && (
+            <>
+              <NavTabsItem
+                i18n={i18n}
+                id={NavTab.Calls}
+                label={i18n('icu:NavTabs__ItemLabel--Calls')}
+                iconClassName="NavTabs__ItemIcon--Calls"
+                navTabClassName="NavTabs__Item--Calls"
+                unreadStats={{
+                  unreadCount: unreadCallsCount,
+                  unreadMentionsCount: 0,
+                  readChatsMarkedUnreadCount: 0,
+                }}
+              />
+              {storiesEnabled && (
+                <NavTabsItem
+                  i18n={i18n}
+                  id={NavTab.Stories}
+                  label={i18n('icu:NavTabs__ItemLabel--Stories')}
+                  iconClassName="NavTabs__ItemIcon--Stories"
+                  hasError={hasFailedStorySends}
+                  navTabClassName="NavTabs__Item--Stories"
+                  unreadStats={{
+                    unreadCount: unreadStoriesCount,
+                    unreadMentionsCount: 0,
+                    readChatsMarkedUnreadCount: 0,
+                  }}
+                />
+              )}
+            </>
           )}
           <NavTabsItem
             i18n={i18n}
@@ -318,12 +349,16 @@ export function NavTabs({
       <TabPanel id={NavTab.Chats} className="NavTabs__TabPanel">
         {renderChatsTab}
       </TabPanel>
-      <TabPanel id={NavTab.Calls} className="NavTabs__TabPanel">
-        {renderCallsTab}
-      </TabPanel>
-      <TabPanel id={NavTab.Stories} className="NavTabs__TabPanel">
-        {renderStoriesTab}
-      </TabPanel>
+      {!LETTA_MODE && (
+        <>
+          <TabPanel id={NavTab.Calls} className="NavTabs__TabPanel">
+            {renderCallsTab}
+          </TabPanel>
+          <TabPanel id={NavTab.Stories} className="NavTabs__TabPanel">
+            {renderStoriesTab}
+          </TabPanel>
+        </>
+      )}
       <TabPanel id={NavTab.Settings} className="NavTabs__TabPanel">
         {renderSettingsTab}
       </TabPanel>

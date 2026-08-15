@@ -52,6 +52,7 @@ import { SmartMiniPlayer } from './MiniPlayer.preload.tsx';
 import { SmartPinnedMessagesBar } from './PinnedMessagesBar.preload.tsx';
 import { getContactSpoofingWarningSelector } from '../selectors/timeline.preload.ts';
 import { useNavActions } from '../ducks/nav.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 function renderCollidingAvatars(
   props: SmartCollidingAvatarsProps
@@ -301,6 +302,7 @@ export const SmartConversationHeader = memo(function SmartConversationHeader({
       isSelectMode={isSelectMode}
       isSignalConversation={isSignalConversation(conversation)}
       isSmsOnlyOrUnregistered={
+        !LETTA_MODE &&
         isDirectConversation(conversation) &&
         (isConversationSMSOnly(conversation) ||
           isConversationEverUnregistered(conversation))

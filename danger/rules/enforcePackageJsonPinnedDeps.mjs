@@ -29,6 +29,9 @@ function isPinnedVersion(depSpec) {
   if (depSpec.startsWith('workspace:')) {
     return depSpec === 'workspace:*'; // pnpm 11 default
   }
+  if (depSpec.startsWith('file:')) {
+    return true; // The repository and lockfile integrity pin vendored files.
+  }
   return semver.valid(depSpec) != null;
 }
 

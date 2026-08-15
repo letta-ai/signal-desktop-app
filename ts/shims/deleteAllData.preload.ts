@@ -7,6 +7,7 @@ import { deleteAllLogs } from '../util/deleteAllLogs.preload.ts';
 import * as Errors from '../types/errors.std.ts';
 import { unlink, deleteAccount } from '../textsecure/WebAPI.preload.ts';
 import { leaveAllGroups } from '../util/leaveAllGroups.preload.ts';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 
 const log = createLogger('deleteAllData');
 
@@ -16,7 +17,10 @@ export async function deleteAllData(
   callback: (state: StateType) => unknown
 ): Promise<void> {
   try {
-    if (window.ConversationController.areWePrimaryDevice()) {
+    if (LETTA_MODE) {
+      callback('deleting-data');
+      log.info('skipping Signal account cleanup in Letta mode');
+    } else if (window.ConversationController.areWePrimaryDevice()) {
       callback('leaving-groups');
       log.info('leaving all groups');
       await leaveAllGroups();

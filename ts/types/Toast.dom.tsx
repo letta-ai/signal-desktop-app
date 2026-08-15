@@ -61,6 +61,7 @@ export enum ToastType {
   InvalidConversation = 'InvalidConversation',
   InvalidStorageServiceHeaders = 'InvalidStorageServiceHeaders',
   LeftGroup = 'LeftGroup',
+  LettaSendError = 'LettaSendError',
   LinkCopied = 'LinkCopied',
   LoadingFullLogs = 'LoadingFullLogs',
   _InternalMainProcessLoggingError = '_InternalMainProcessLoggingError',
@@ -202,6 +203,10 @@ export type AnyToast =
   | { toastType: ToastType.InvalidConversation }
   | { toastType: ToastType.InvalidStorageServiceHeaders }
   | { toastType: ToastType.LeftGroup }
+  | {
+      toastType: ToastType.LettaSendError;
+      parameters: { message: string };
+    }
   | { toastType: ToastType.LinkCopied }
   | { toastType: ToastType.LoadingFullLogs }
   | {

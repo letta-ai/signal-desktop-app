@@ -181,6 +181,14 @@ function getToast(toastType: ToastType): AnyToast {
       return { toastType: ToastType.InvalidStorageServiceHeaders };
     case ToastType.LeftGroup:
       return { toastType: ToastType.LeftGroup };
+    case ToastType.LettaSendError:
+      return {
+        toastType: ToastType.LettaSendError,
+        parameters: {
+          message:
+            'Message not sent. Add at least $1 in Letta organization credits.',
+        },
+      };
     case ToastType.LinkCopied:
       return { toastType: ToastType.LinkCopied };
     case ToastType.LoadingFullLogs:

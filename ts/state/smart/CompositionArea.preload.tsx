@@ -62,6 +62,7 @@ import { isDirectConversation } from '../../util/whatTypeOfConversation.dom.ts';
 import { itemStorage } from '../../textsecure/Storage.preload.ts';
 import { useNavActions } from '../ducks/nav.std.ts';
 import { isFeaturedEnabledSelector } from '../../util/isFeatureEnabled.dom.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 function renderSmartCompositionRecording() {
   return <SmartCompositionRecording />;
@@ -347,6 +348,7 @@ export const SmartCompositionArea = memo(function SmartCompositionArea({
       isReported={conversation.isReported ?? false}
       isHidden={conversation.removalStage != null}
       isSmsOnlyOrUnregistered={
+        !LETTA_MODE &&
         isDirectConversation(conversation) &&
         (isConversationSMSOnly(conversation) ||
           isConversationEverUnregistered(conversation))

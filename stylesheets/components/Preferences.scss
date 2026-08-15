@@ -216,6 +216,10 @@
       @include preferences-icon('../images/icons/v3/bell/bell.svg');
     }
 
+    &--transcription {
+      @include preferences-icon('../images/icons/v3/mic/mic.svg');
+    }
+
     &--privacy {
       @include preferences-icon('../images/icons/v3/lock/lock.svg');
     }
@@ -550,6 +554,60 @@
     &--readonly {
       opacity: 0.4;
     }
+  }
+}
+
+.PreferencesTranscription {
+  &__key,
+  &__service {
+    padding-block: 12px;
+    padding-inline: 24px;
+  }
+
+  &__service-select {
+    margin-bottom: 8px;
+    max-width: 320px;
+  }
+
+  &__model {
+    margin-top: 20px;
+  }
+
+  &__key-label {
+    display: block;
+    margin-bottom: 8px;
+  }
+
+  &__key-controls {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  &__key-input {
+    @include mixins.font-body-1;
+    background: var(--axo-color-fill-primary);
+    border: 1px solid var(--axo-color-border-primary);
+    border-radius: 10px;
+    color: var(--axo-color-label-primary);
+    flex: 1;
+    min-width: 0;
+    padding-block: 10px;
+    padding-inline: 12px;
+
+    &:focus {
+      border-color: var(--axo-color-accent);
+      outline: none;
+    }
+
+    &:disabled {
+      color: var(--axo-color-label-disabled);
+    }
+  }
+
+  &__remove-key {
+    margin-top: 16px;
   }
 }
 

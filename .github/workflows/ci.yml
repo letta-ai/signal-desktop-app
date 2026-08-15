@@ -551,6 +551,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Setup pnpm
@@ -567,7 +571,7 @@ jobs:
         run: pnpm run danger:ci
         working-directory: danger
         env:
-          DANGER_GITHUB_API_TOKEN: ${{ secrets.AUTOMATED_GITHUB_PAT }}
+          DANGER_GITHUB_API_TOKEN: ${{ secrets.AUTOMATED_GITHUB_PAT || github.token }}
 
   storybook:
     name: Storybook

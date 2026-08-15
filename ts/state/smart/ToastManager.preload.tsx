@@ -34,6 +34,7 @@ import type { WidthBreakpoint } from '../../components/_util.std.ts';
 import { getToast } from '../selectors/toast.std.ts';
 import { useDonationsActions } from '../ducks/donations.preload.ts';
 import { itemStorage } from '../../textsecure/Storage.preload.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { getVisibleMegaphonesForDisplay } from '../selectors/megaphones.preload.ts';
 import { useMegaphonesActions } from '../ducks/megaphones.preload.ts';
 import { shouldNeverBeCalled } from '../../util/shouldNeverBeCalled.std.ts';
@@ -110,6 +111,7 @@ export const SmartToastManager = memo(function SmartToastManager({
   let megaphone: AnyActionableMegaphone | undefined;
 
   if (
+    !LETTA_MODE &&
     !hasCompletedUsernameOnboarding &&
     !username &&
     globalModals.usernameOnboardingState === UsernameOnboardingState.NeverShown

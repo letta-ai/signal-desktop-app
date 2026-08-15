@@ -29,6 +29,7 @@ import {
 import { AggregatedStats } from '../../textsecure/WebsocketResources.preload.ts';
 import { UNAUTHENTICATED_CHANNEL_NAME } from '../../textsecure/SocketManager.preload.ts';
 import { isProduction } from '../../util/version.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { ToastType } from '../../types/Toast.dom.tsx';
 import { ConversationController } from '../../ConversationController.preload.ts';
 import { isEnabled } from '../../RemoteConfig.dom.ts';
@@ -108,6 +109,8 @@ const IPC: IPCType = {
   openSystemMediaPermissions: mediaType =>
     ipc.invoke('open-system-media-permissions', mediaType),
   getMediaPermissions: () => ipc.invoke('settings:get:mediaPermissions'),
+  getLettaTranscriptionConfig: () =>
+    ipc.invoke('letta-transcription:get-config'),
   getMediaCameraPermissions: () =>
     ipc.invoke('settings:get:mediaCameraPermissions'),
   logAppLoadedEvent: ({ processedCount }) =>
@@ -159,6 +162,16 @@ const IPC: IPCType = {
     ipc.invoke('settings:set:mediaPermissions', value),
   setMediaCameraPermissions: (value: boolean) =>
     ipc.invoke('settings:set:mediaCameraPermissions', value),
+  setLettaTranscriptionProvider: provider =>
+    ipc.invoke('letta-transcription:set-provider', provider),
+  setLettaTranscriptionKey: (provider, apiKey) =>
+    ipc.invoke('letta-transcription:set-key', { provider, apiKey }),
+  clearLettaTranscriptionKey: provider =>
+    ipc.invoke('letta-transcription:clear-key', provider),
+  clearLettaTranscriptionConfiguration: () =>
+    ipc.invoke('letta-transcription:clear-configuration'),
+  transcribeLettaVoiceMemo: audio =>
+    ipc.invoke('letta-transcription:transcribe', audio),
   showSettings: () => ipc.send('show-settings'),
   showWindow: () => {
     log.info('show window');
@@ -497,7 +510,7 @@ ipc.on('sql-error', () => {
     return;
   }
 
-  if (isProduction(window.getVersion())) {
+  if (LETTA_MODE || isProduction(window.getVersion())) {
     return;
   }
 
