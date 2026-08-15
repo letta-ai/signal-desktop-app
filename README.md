@@ -1,44 +1,69 @@
-<!-- Copyright 2014 Signal Messenger, LLC -->
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
-# Signal Desktop
+# Signal Agent SDK Demo
 
-Signal Desktop links with Signal on [Android](https://github.com/signalapp/Signal-Android) or [iOS](https://github.com/signalapp/Signal-iOS) and lets you message from your Windows, macOS, and Linux computers.
+This repository demonstrates how to connect the [Letta Agent SDK](https://github.com/letta-ai/letta-agent-sdk) to an existing desktop application shell. It keeps Signal Desktop's familiar contact list, conversations, composer, message history, attachments, typing indicators, and retry interface while using Letta agents and conversations behind them.
 
-[Install the production version](https://signal.org/download/) or help us out by [installing the beta version](https://support.signal.org/hc/articles/360007318471-Signal-Beta).
+This is an integration demo. It is not a Signal client for communicating over the Signal network, an official Signal release, or a starter architecture for a new chat application. If you want a purpose-built Agent SDK client, see the [Agent SDK mobile example](https://github.com/letta-ai/agent-sdk-mobile-app).
 
-## Got a question?
+## What it demonstrates
 
-You can find answers to a number of frequently asked questions on our [support site](https://support.signal.org/).
-The [community forum](https://community.signalusers.org/) is another good place for questions.
+- Representing Letta agents as contacts in an existing application's data model.
+- Giving each contact a persistent Letta conversation.
+- Connecting an existing send action to `session.send()`.
+- Folding `session.stream()` through `createTranscriptAccumulator()` and projecting assistant rows into native message objects.
+- Reusing the host application's optimistic sends, local history, typing state, failure state, and retry action.
+- Sending image attachments as Agent SDK multimodal content.
+- Transcribing outgoing voice memos before sending their text to an agent.
+- Loading agent profile pictures from MemFS into the host application's avatar system.
 
-## Found a Bug?
+The integration is intentionally shaped around Signal Desktop's existing boundaries. Signal-specific identity seeding, contact records, Redux actions, and database writes are adapter code for this demo, not requirements of the Agent SDK.
 
-Please search for any [existing issues](https://github.com/signalapp/Signal-Desktop/issues) that describe your bug in order to avoid duplicate submissions.
+## Run locally
 
-## Have a feature request, question, comment?
+Signal Desktop currently requires Node.js 24.17.0 and pnpm 11.5.2.
 
-Please use our community forum: https://community.signalusers.org/
+```bash
+nvm install
+nvm use
+pnpm install
+pnpm generate
+LETTA_API_KEY=sk-let-... pnpm start
+```
 
-## Contributing to the project
+`LETTA_API_KEY` is used for both agent discovery and agent turns by default. To run turns with a separate credential, set `LETTA_RUNTIME_API_KEY` as well.
 
-Please see [CONTRIBUTING.md](https://github.com/signalapp/Signal-Desktop/blob/main/CONTRIBUTING.md). There are lots of ways to contribute - many that don't involve code!
+Optional settings:
 
-## Donate to Signal
+- `LETTA_MODE=0` runs the upstream Signal behavior instead of the demo integration.
+- `COMPANY_LETTA_API_KEY` and `DEVELOPERS_API_KEY` are accepted as local credential fallbacks.
+- Voice transcription providers and their keys are configured inside the app under **Settings → Transcription**.
 
-You can donate to Signal from inside Signal apps (Desktop, Android, or iOS), or via the web here: [Signal Technology Foundation](https://signal.org/donate). Signal is an independent 501c3 nonprofit.
+The Agent SDK is vendored at version 0.7.1 so a fresh clone uses the exact SDK version this demo was tested against.
 
-## Cryptography Notice
+## How messages flow
 
-This distribution includes cryptographic software. The country in which you currently reside may have restrictions on the import, possession, use, and/or re-export to another country, of encryption software.
-BEFORE using any encryption software, please check your country's laws, regulations and policies concerning the import, possession, or use, and re-export of encryption software, to see if this is permitted.
-See <http://www.wassenaar.org/> for more information.
+1. Signal creates and stores the outgoing message using its normal composer and message model.
+2. The Letta adapter creates a Letta conversation on the first send, then resumes that conversation through the portable Agent SDK client.
+3. Text and supported attachments are passed to `session.send()`.
+4. Stream messages are applied to the SDK transcript accumulator.
+5. Assistant rows are inserted as incoming Signal messages and updated as their text grows.
+6. SDK or transcription failures use Signal's existing failed-send state and **Retry Send** action.
 
-The U.S. Government Department of Commerce, Bureau of Industry and Security (BIS), has classified this software as Export Commodity Control Number (ECCN) 5D002.C.1, which includes information security software using or performing cryptographic functions with asymmetric algorithms.
-The form and manner of this distribution makes it eligible for export under the License Exception ENC Technology Software Unrestricted (TSU) exception (see the BIS Export Administration Regulations, Section 740.13) for both object code and source code.
+The main integration lives in [`ts/services/letta.preload.ts`](ts/services/letta.preload.ts). Detailed implementation notes are in [`LETTA_FORK.md`](LETTA_FORK.md).
 
-## License
+## Demo boundaries
 
-Copyright 2013-2024 Signal Messenger, LLC
+- Letta mode does not link a Signal account or authenticate with Signal's service.
+- Reasoning, tool-call, and tool-result rows are not rendered.
+- The demo uses `permissionMode: 'unrestricted'` and an allow-all `canUseTool` callback because it has no approval interface. Agents used with this demo can run their available tools without asking in the UI.
+- Images are limited to PNG, JPEG, GIF, and WebP.
+- Voice memo audio is sent to the transcription provider selected by the user. Only the returned text is sent to the Letta agent.
+- The first remote-history import is limited to 100 messages.
+- This repository has not been prepared for independent distribution under Signal's name or trademarks.
 
-Licensed under the GNU AGPLv3: https://www.gnu.org/licenses/agpl-3.0.html
+## Upstream and license
+
+This repository is a fork of [Signal Desktop](https://github.com/signalapp/Signal-Desktop). Signal Desktop is Copyright 2013-2024 Signal Messenger, LLC and licensed under the GNU AGPLv3. See [`LICENSE`](LICENSE) and [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md).
+
+Letta and Signal are separate projects. This demo is maintained by Letta and is not an official Signal release.
