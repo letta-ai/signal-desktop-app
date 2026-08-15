@@ -36,9 +36,6 @@ export const LETTA_RUNTIME_API_KEY: string | undefined = firstEnv(
   'COMPANY_LETTA_API_KEY'
 );
 
-export const LETTA_AGENT_MODEL: string =
-  firstEnv('LETTA_AGENT_MODEL') || 'anthropic/claude-opus-4-8';
-
 // Fixed, valid ACI-format UUID for our local identity. Never sent anywhere.
 export const LETTA_OUR_ACI = 'a1b2c3d4-1111-4111-8111-111111111111';
 

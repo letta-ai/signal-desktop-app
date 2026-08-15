@@ -1,9 +1,9 @@
-# Signal Desktop × Letta — fork notes
+# Signal Desktop × Letta fork notes
 
-This fork replaces Signal's protocol backend with the **Letta Agent SDK**.
-All Letta agents are available under **New chat** and search. The left pane shows
-only agents with a started chat. Each contact uses a dedicated persistent Letta
-conversation. Replies stream in as incoming bubbles.
+This fork is a demo of connecting the **Letta Agent SDK** to an existing desktop
+application shell. All Letta agents are available under **New chat** and search.
+The left pane shows only agents with a started chat. Each contact uses a dedicated
+persistent Letta conversation. Replies stream in as incoming bubbles.
 
 Everything is gated behind `LETTA_MODE` (on by default; set `LETTA_MODE=0` to run
 stock Signal).
@@ -18,15 +18,15 @@ pnpm install
 pnpm generate
 
 # 3. launch with your Letta Cloud API key in the environment
-COMPANY_LETTA_API_KEY=sk-let-... pnpm start
+LETTA_API_KEY=sk-let-... pnpm start
 ```
 
 Optional env:
 
-- `LETTA_MODE=0` — disable the fork, run stock Signal.
-- `LETTA_API_KEY` — overrides `COMPANY_LETTA_API_KEY` when both are set.
-- `LETTA_AGENT_MODEL=anthropic/claude-opus-4-8` — model for a fallback agent if
-  the account has none.
+- `LETTA_MODE=0` disables the demo integration and runs the upstream Signal behavior.
+- `LETTA_RUNTIME_API_KEY` uses a separate credential for agent turns.
+- `COMPANY_LETTA_API_KEY` and `DEVELOPERS_API_KEY` remain available as local
+  credential fallbacks.
 
 The app caches agent contacts and their dedicated Letta conversation IDs in
 Signal's isolated local profile. Later launches restore the same contacts and
@@ -36,9 +36,8 @@ conversations before refreshing the agent list.
 
 ### New files
 
-- `ts/util/lettaMode.preload.ts` — `LETTA_MODE` flag, API key, fixed local
-  identity UUIDs, storage keys.
-- `ts/util/lettaMode.std.ts` — main-process `LETTA_MODE`; used to rename
+- `ts/util/lettaMode.std.ts` contains the `LETTA_MODE` flag, API key lookup,
+  fixed local identity UUIDs, and the main-process app name. It is used to rename
   the Electron app before `safeStorage` so macOS Keychain never asks for
   production Signal's `Signal Safe Storage` item.
 - `ts/services/letta.preload.ts` — SDK client and session lifecycle, boot identity
@@ -77,10 +76,11 @@ conversations before refreshing the agent list.
 ## How a message round-trips
 
 1. **Send** — composer → `enqueueMessageForSend` builds and inserts the outgoing
-   bubble, then the seam calls `lettaService.sendText()`. The service sends to
-   the contact's dedicated conversation. It marks success as delivered. It uses
-   Signal's native failed-send status and retry action for failures. It does not
-   create an incoming error bubble.
+   bubble, then the seam calls `lettaService.sendText()`. On the first send, the
+   adapter creates a conversation through `client.conversations.create()` and
+   resumes it with `client.resumeSession()`. It marks success as delivered. It
+   uses Signal's native failed-send status and retry action for failures. It does
+   not create an incoming error bubble.
 2. **Receive** — the service iterates `session.stream()` and folds each message
    through the SDK's `createTranscriptAccumulator()` (the canonical way to turn
    streamed fragments into stable rows — typed-by-family merging, otid/uuid
@@ -93,17 +93,19 @@ conversations before refreshing the agent list.
 
 ## Architecture choices
 
-- Integration lives in the **preload** bundle — that's where Signal's whole
-  React/Redux app runs, with `window.reduxActions`, `ConversationController`,
-  `MessageCache`, `storage`, plus Node + DOM.
-- SDK entry is the portable **`@letta-ai/letta-agent-sdk/client`** (a
-  self-contained, dependency-free bundle) with `backend: 'cloud'` and
-  `webSocketAuth: 'query'` (a browser WebSocket can't send an Authorization
-  header, so the token goes in the query string).
+- Integration lives in the **preload** bundle because that is where Signal's
+  React/Redux app exposes `window.reduxActions`, `ConversationController`,
+  `MessageCache`, storage, Node, and the DOM.
+- All Agent SDK values and types come from the portable
+  **`@letta-ai/letta-agent-sdk/client`** entry. The client uses `backend: 'cloud'`
+  and `webSocketAuth: 'query'` because a browser WebSocket cannot send an
+  Authorization header.
+- Agent and conversation management use the SDK's `agents` and `conversations`
+  namespaces. The profile-picture endpoint remains a direct API call because the
+  portable SDK does not expose it.
 - SDK version is **0.7.1**, vendored as a relative tarball under `vendor/` and
   referenced from `package.json` as `file:vendor/letta-ai-letta-agent-sdk-0.7.1.tgz`
-  so the fork installs from a clone without depending on the npm publish
-  (0.7.1 is still inside the registry's minimum-release-age window). To move to
+  so a fresh clone uses the exact SDK version tested with this demo. To move to
   the npm package later: `pnpm add -w @letta-ai/letta-agent-sdk@^0.7.1` and
   delete `vendor/`.
 
@@ -112,8 +114,9 @@ conversations before refreshing the agent list.
 - PNG, JPEG, GIF, and WebP images are forwarded with an optional caption. Other
   attachments, quotes, edits, and reactions are not forwarded.
 - Reasoning and tool-call/tool-result stream events are ignored (not rendered).
-- No approval flow (`canUseTool` unset); an agent turn that stops on a required
-  approval would hang the stream. Keep the agent's tools non-approval-gated.
+- The demo has no approval interface. Sessions use `permissionMode: 'unrestricted'`
+  and an allow-all `canUseTool` callback, so available tools can run without asking
+  in the UI.
 - Remote user and assistant messages are imported when a dedicated conversation
   has no local history. The first import is limited to 100 remote messages.
 - The left pane shows chats with a message, saved draft, or dedicated Letta

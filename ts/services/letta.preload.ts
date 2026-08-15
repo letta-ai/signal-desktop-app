@@ -13,10 +13,12 @@ import {
   createTranscriptAccumulator,
 } from '@letta-ai/letta-agent-sdk/client';
 import type {
+  LettaCodeSession,
+  LettaConversationMessage,
   SDKResultMessage,
+  SendMessage,
   TranscriptRow,
 } from '@letta-ai/letta-agent-sdk/client';
-import type { SendMessage } from '@letta-ai/letta-agent-sdk';
 
 import { createLogger } from '../logging/log.std.ts';
 import { drop } from '../util/drop.std.ts';
@@ -77,22 +79,6 @@ const untypedStorage = itemStorage as unknown as {
 
 type SupportedImageMediaType = (typeof SUPPORTED_IMAGE_MEDIA_TYPES)[number];
 
-type LettaSession = {
-  initialize(): Promise<{
-    agentId: string;
-    sessionId: string;
-    conversationId: string;
-  }>;
-  send(message: SendMessage): Promise<void>;
-  stream(): AsyncGenerator<LettaStreamMessage>;
-  close?(): void;
-};
-
-type LettaStreamMessage =
-  | { type: 'assistant'; content: string; uuid: string; otid?: string | null }
-  | SDKResultMessage
-  | { type: string; [key: string]: unknown };
-
 type AgentContact = {
   agentId: string;
   name: string;
@@ -106,17 +92,25 @@ type AgentSummary = {
   hidden?: boolean | null;
 };
 
+type HistoryMessage = LettaConversationMessage & {
+  message_type: 'user_message' | 'assistant_message';
+  content: string;
+};
+
+function isHistoryMessage(
+  message: LettaConversationMessage
+): message is HistoryMessage {
+  return (
+    'content' in message &&
+    typeof message.content === 'string' &&
+    (message.message_type === 'user_message' ||
+      message.message_type === 'assistant_message')
+  );
+}
+
 type AvatarLoad = {
   agentId: string;
   conversationId: string;
-};
-
-type RemoteConversationMessage = {
-  id?: string;
-  date?: string;
-  seq_id?: number;
-  message_type?: string;
-  content?: string;
 };
 
 function formatError(error: unknown): string {
@@ -247,7 +241,7 @@ class LettaService {
   #initPromise: Promise<void> | undefined;
   #initError: string | undefined;
   readonly #contacts = new Map<string, AgentContact>();
-  readonly #sessions = new Map<string, LettaSession>();
+  readonly #sessions = new Map<string, LettaCodeSession>();
   readonly #typingRefreshTimers = new Map<
     string,
     ReturnType<typeof setInterval>
@@ -814,39 +808,24 @@ class LettaService {
       return;
     }
 
-    const response = await lettaNodeFetch(
-      `${LETTA_API_BASE_URL}/v1/conversations/${encodeURIComponent(contact.lettaConversationId)}/messages?limit=100`,
-      {
-        headers: {
-          Authorization: `Bearer ${LETTA_API_KEY}`,
-          Accept: 'application/json',
-        },
-      }
-    );
-    if (!response.ok) {
+    if (!this.#directoryClient) {
+      return;
+    }
+    let payload;
+    try {
+      payload = await this.#directoryClient.conversations.listMessages(
+        contact.lettaConversationId,
+        { limit: 100 }
+      );
+    } catch (error) {
       log.warn('remote history request failed', {
         agentId: contact.agentId,
-        status: response.status,
+        error: formatError(error),
       });
       return;
     }
-    const payload = (await response.json()) as Array<RemoteConversationMessage>;
-    if (!Array.isArray(payload)) {
-      return;
-    }
-    const messages = payload
-      .filter(
-        message =>
-          typeof message.id === 'string' &&
-          typeof message.content === 'string' &&
-          (message.message_type === 'user_message' ||
-            message.message_type === 'assistant_message')
-      )
-      .sort((left, right) => {
-        const leftDate = Date.parse(left.date ?? '') || 0;
-        const rightDate = Date.parse(right.date ?? '') || 0;
-        return leftDate - rightDate || (left.seq_id ?? 0) - (right.seq_id ?? 0);
-      });
+    // The SDK returns the newest page first. Signal inserts history chronologically.
+    const messages = payload.messages.filter(isHistoryMessage).reverse();
 
     let inserted = 0;
     for (const remote of messages) {
@@ -1171,7 +1150,7 @@ class LettaService {
     this.#startTyping(conversationId);
     try {
       await this.initialize();
-      const contact = this.#contacts.get(conversationId);
+      let contact = this.#contacts.get(conversationId);
       if (!contact || !this.#client) {
         this.#markOutgoingFailed(outgoingModel);
         return;
@@ -1206,9 +1185,10 @@ class LettaService {
       };
       log.info('turn started', turnContext);
 
-      let session: LettaSession;
+      let session: LettaCodeSession;
       try {
         session = await this.#sessionFor(contact);
+        contact = this.#contacts.get(conversationId) ?? contact;
         session = await this.#sendWithRecovery(
           contact,
           session,
@@ -1229,9 +1209,7 @@ class LettaService {
       const bubbles = new Map<string, MessageModel>();
       try {
         for await (const message of session.stream()) {
-          const rows = transcript.apply(
-            message as Parameters<typeof transcript.apply>[0]
-          );
+          const rows = transcript.apply(message);
           if (
             bubbles.size === 0 &&
             rows.some(row => row.kind === 'assistant')
@@ -1240,10 +1218,10 @@ class LettaService {
           }
           await this.#renderRows(conversationId, rows, bubbles);
 
-          if ((message as { type?: string }).type === 'result') {
+          if (message.type === 'result') {
             await this.#finalizeTurn({
               ...turnContext,
-              result: message as SDKResultMessage,
+              result: message,
               bubbles,
             });
           }
@@ -1300,7 +1278,7 @@ class LettaService {
     });
   }
 
-  async #sessionFor(contact: AgentContact): Promise<LettaSession> {
+  async #sessionFor(contact: AgentContact): Promise<LettaCodeSession> {
     const existing = this.#sessions.get(contact.agentId);
     if (existing) {
       return existing;
@@ -1309,44 +1287,28 @@ class LettaService {
       throw new Error('Letta session is not available');
     }
 
-    let session = contact.lettaConversationId
-      ? (this.#client.resumeSession(
-          contact.lettaConversationId,
-          this.#sessionOptions()
-        ) as unknown as LettaSession)
-      : (this.#client.createSession(
-          contact.agentId,
-          this.#sessionOptions()
-        ) as unknown as LettaSession);
-    let init;
-    try {
-      init = await session.initialize();
-    } catch (error) {
-      if (!contact.lettaConversationId || !isClosedCloudSession(error)) {
-        throw error;
-      }
-      session.close?.();
-      session = this.#client.createSession(
-        contact.agentId,
-        this.#sessionOptions()
-      ) as unknown as LettaSession;
-      init = await session.initialize();
-    }
-    this.#sessions.set(contact.agentId, session);
-    if (
-      init.conversationId !== 'default' &&
-      contact.lettaConversationId !== init.conversationId
-    ) {
+    let lettaConversationId = contact.lettaConversationId;
+    if (!lettaConversationId) {
+      const conversation = await this.#client.conversations.create({
+        agentId: contact.agentId,
+      });
+      lettaConversationId = conversation.id;
       this.#contacts.set(contact.conversationId, {
         ...contact,
-        lettaConversationId: init.conversationId,
+        lettaConversationId,
       });
       await this.#persistContacts();
       log.info('Signal conversation linked to Letta conversation', {
         agentId: contact.agentId,
-        lettaConversationId: init.conversationId,
+        lettaConversationId,
       });
     }
+
+    const session = this.#client.resumeSession(
+      lettaConversationId,
+      this.#sessionOptions()
+    );
+    this.#sessions.set(contact.agentId, session);
     return session;
   }
 
@@ -1466,19 +1428,24 @@ class LettaService {
 
   async #sendWithRecovery(
     contact: AgentContact,
-    session: LettaSession,
+    session: LettaCodeSession,
     message: SendMessage
-  ): Promise<LettaSession> {
+  ): Promise<LettaCodeSession> {
     try {
       await session.send(message);
       return session;
     } catch (error) {
-      if (isClosedCloudSession(error) && this.#client) {
+      if (
+        isClosedCloudSession(error) &&
+        this.#client &&
+        contact.lettaConversationId
+      ) {
         log.info('sandbox expired; rebuilding session');
+        session.close();
         const next = this.#client.resumeSession(
-          contact.lettaConversationId ?? contact.agentId,
+          contact.lettaConversationId,
           this.#sessionOptions()
-        ) as unknown as LettaSession;
+        );
         this.#sessions.set(contact.agentId, next);
         await next.send(message);
         return next;
