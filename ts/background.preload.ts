@@ -1225,7 +1225,12 @@ async function startApp(): Promise<void> {
       );
       initializeNetworkObserver(
         window.reduxActions.network,
-        () => window.getSocketStatus().authenticated.status
+        // In LETTA_MODE there is no Signal socket; report OPEN so the network
+        // banner only reacts to real connectivity loss.
+        () =>
+          LETTA_MODE
+            ? SocketStatus.OPEN
+            : window.getSocketStatus().authenticated.status
       );
       initializeUpdateListener(window.reduxActions.updates);
       calling.initialize(
