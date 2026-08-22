@@ -74,6 +74,7 @@ export enum SettingsPage {
   Calls = 'Calls',
   Notifications = 'Notifications',
   Transcription = 'Transcription',
+  LettaAccount = 'LettaAccount',
   Privacy = 'Privacy',
   DataUsage = 'DataUsage',
   Backups = 'Backups',

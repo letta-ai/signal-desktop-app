@@ -119,6 +119,7 @@ $is-storybook: false !default;
 @use 'components/LeftPaneSearchInput.scss';
 @use 'components/Lightbox.scss';
 @use 'components/ListTile.scss';
+@use 'components/LettaAuthGate.scss';
 @use 'components/LowDiskSpaceBackupImportModal.scss';
 @use 'components/MediaEditor.scss';
 @use 'components/MessageAudio.scss';

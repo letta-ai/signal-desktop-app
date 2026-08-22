@@ -46,12 +46,12 @@ import { formatLettaMarkdown } from '../util/lettaMarkdown.std.ts';
 import { cleanupMessages } from '../util/cleanup.preload.ts';
 import {
   LETTA_MODE,
-  LETTA_API_KEY,
-  LETTA_RUNTIME_API_KEY,
   LETTA_OUR_ACI,
   LETTA_ACI_NAMESPACE,
   LETTA_LEGACY_PEER_ACI,
 } from '../util/lettaMode.std.ts';
+import { lettaAuthBridge } from './lettaAuthBridge.preload.ts';
+import type { LettaCredential } from './lettaAuthBridge.preload.ts';
 import { lettaNodeFetch } from '../util/lettaNodeFetch.node.ts';
 import { isVoiceMessage } from '../util/Attachment.std.ts';
 
@@ -144,6 +144,12 @@ function visibleSendError(error?: unknown): string {
   }
   if (detail.includes('TRANSCRIPTION_KEY_MISSING')) {
     return 'Message not sent. Add a key for the selected transcription service in Settings.';
+  }
+  if (
+    detail.includes('Letta authentication required') ||
+    detail.includes('signed out')
+  ) {
+    return 'Message not sent. Sign in to Letta.';
   }
   if (
     detail.includes('TRANSCRIPTION_SECURE_STORAGE_UNAVAILABLE') ||
@@ -240,6 +246,16 @@ class LettaService {
   #directoryClient: LettaAgentClient | undefined;
   #initPromise: Promise<void> | undefined;
   #initError: string | undefined;
+  // Tracks the credential currently applied to the SDK clients. The key itself
+  // already lives in #apiKey for authenticated profile requests, so avoid
+  // keeping a second secret-bearing fingerprint string.
+  #authSource: LettaCredential['source'] | undefined;
+  // A credential change observed while turns were still running; applied once
+  // the last turn finishes so live streams are not cut mid-flight.
+  #pendingAuthChange = false;
+  // Serializes auth transitions.
+  #authChain: Promise<unknown> = Promise.resolve();
+  #apiKey: string | undefined;
   readonly #contacts = new Map<string, AgentContact>();
   readonly #sessions = new Map<string, LettaCodeSession>();
   readonly #typingRefreshTimers = new Map<
@@ -255,6 +271,12 @@ class LettaService {
   // Serializes turns per conversation. The SDK stream() drains one shared
   // queue per session, so only one turn may run at a time for that agent.
   readonly #turnChains = new Map<string, Promise<unknown>>();
+
+  // Auth transitions arrive from the main process (login, logout, refresh
+  // rotation); every transition re-checks the current credential.
+  constructor() {
+    lettaAuthBridge.onStatusChanged(() => this.handleAuthChanged());
+  }
 
   isEnabled(): boolean {
     return LETTA_MODE;
@@ -290,6 +312,10 @@ class LettaService {
     }
     try {
       await this.initialize();
+      if (!this.#client) {
+        log.info('bootstrapConversation: signed out; skipping');
+        return;
+      }
       if (this.#contacts.size === 0) {
         log.warn('bootstrapConversation: no agent contacts');
         return;
@@ -348,24 +374,110 @@ class LettaService {
     return this.#initPromise;
   }
 
-  async #doInitialize(): Promise<void> {
-    if (!LETTA_API_KEY || !LETTA_RUNTIME_API_KEY) {
-      this.#initError =
-        'No Letta credentials. Set LETTA_API_KEY and LETTA_RUNTIME_API_KEY.';
-      log.error(this.#initError);
+  // Called on every main-process auth status change. Serialized and idempotent:
+  // repeated events for the same credential do nothing.
+  handleAuthChanged(): void {
+    const run = async () => {
+      try {
+        await this.#authChain;
+      } catch {
+        // A failed previous transition must not block the next one.
+      }
+      await this.#applyAuthChange();
+    };
+    this.#authChain = run();
+  }
+
+  async #applyAuthChange(): Promise<void> {
+    let credential: LettaCredential | undefined;
+    try {
+      credential = await lettaAuthBridge.getCurrentCredential();
+    } catch (error) {
+      log.warn(
+        'credential lookup failed during auth change',
+        formatError(error)
+      );
+    }
+    const isAlreadyApplied = credential
+      ? credential.source === this.#authSource &&
+        credential.apiKey === this.#apiKey
+      : this.#authSource === undefined && this.#apiKey === undefined;
+    if (isAlreadyApplied && !this.#pendingAuthChange) {
       return;
     }
 
+    // Don't cut live streams short for a credential rotation; wait for the
+    // running turns to drain. Leave the applied credential unchanged so the
+    // deferred transition is still detected after the final turn finishes.
+    // Signing out tears down immediately.
+    if (credential && this.#turnChains.size > 0) {
+      log.info('auth change deferred until running turns finish');
+      this.#pendingAuthChange = true;
+      return;
+    }
+    this.#pendingAuthChange = false;
+
+    this.#teardownForAuthChange();
+
+    if (!credential) {
+      log.info('auth changed: signed out of Letta');
+      return;
+    }
+
+    log.info('auth changed: reinitializing Letta clients', {
+      source: credential.source,
+    });
+    // Keep client construction and contact hydration inside the serialized auth
+    // transition. Otherwise a fast logout can tear down while an earlier login
+    // initialization is still constructing clients in the background.
+    await this.initialize();
+    await this.bootstrapConversation();
+  }
+
+  #teardownForAuthChange(): void {
+    for (const session of this.#sessions.values()) {
+      try {
+        session.close();
+      } catch (error) {
+        log.warn('session close failed during auth change', formatError(error));
+      }
+    }
+    this.#sessions.clear();
+    this.#client = undefined;
+    this.#directoryClient = undefined;
+    this.#initPromise = undefined;
+    this.#initError = undefined;
+    this.#authSource = undefined;
+    this.#apiKey = undefined;
+  }
+
+  async #doInitialize(): Promise<void> {
+    let credential: LettaCredential | undefined;
+    try {
+      credential = await lettaAuthBridge.getCurrentCredential();
+    } catch (error) {
+      log.warn('credential lookup failed', formatError(error));
+    }
+    if (!credential) {
+      // Being signed out is a normal state, not an error; the auth gate owns
+      // the UI until sign-in completes.
+      this.#initError = undefined;
+      log.info('initialize: signed out of Letta');
+      return;
+    }
+    this.#authSource = credential.source;
+    this.#apiKey = credential.apiKey;
+
     this.#client = new LettaAgentClient({
       backend: 'cloud',
-      apiKey: LETTA_RUNTIME_API_KEY,
+      apiKey: credential.apiKey,
       webSocketAuth: 'query',
       requestTimeoutMs: 600_000,
       fetch: lettaNodeFetch as typeof fetch,
     } as ConstructorParameters<typeof LettaAgentClient>[0]);
     this.#directoryClient = new LettaAgentClient({
       backend: 'cloud',
-      apiKey: LETTA_API_KEY,
+      apiKey: credential.apiKey,
       webSocketAuth: 'query',
       requestTimeoutMs: 600_000,
       fetch: lettaNodeFetch as typeof fetch,
@@ -791,7 +903,7 @@ class LettaService {
   }
 
   async #hydrateRemoteHistory(contact: AgentContact): Promise<void> {
-    if (!LETTA_API_KEY || !contact.lettaConversationId) {
+    if (!this.#apiKey || !contact.lettaConversationId) {
       return;
     }
     const conversation = window.ConversationController.get(
@@ -921,14 +1033,15 @@ class LettaService {
   }
 
   async #loadAvatar({ agentId, conversationId }: AvatarLoad): Promise<void> {
-    if (!LETTA_API_KEY) {
+    const apiKey = this.#apiKey;
+    if (!apiKey) {
       return;
     }
     const response = await lettaNodeFetch(
       `${LETTA_API_BASE_URL}/v1/agents/${encodeURIComponent(agentId)}/profile-picture`,
       {
         headers: {
-          Authorization: `Bearer ${LETTA_API_KEY}`,
+          Authorization: `Bearer ${apiKey}`,
           Accept: 'application/json',
         },
       }
@@ -1038,6 +1151,15 @@ class LettaService {
         await this.#runTurn(conversationId, body, outgoingModel);
       } catch (error) {
         log.error('turn failed', formatError(error));
+      }
+    })();
+    void (async () => {
+      await next;
+      if (this.#turnChains.get(conversationId) === next) {
+        this.#turnChains.delete(conversationId);
+      }
+      if (this.#pendingAuthChange && this.#turnChains.size === 0) {
+        this.handleAuthChanged();
       }
     })();
     this.#turnChains.set(conversationId, next);
@@ -1152,7 +1274,10 @@ class LettaService {
       await this.initialize();
       let contact = this.#contacts.get(conversationId);
       if (!contact || !this.#client) {
-        this.#markOutgoingFailed(outgoingModel);
+        this.#markOutgoingFailed(
+          outgoingModel,
+          new Error('Letta authentication required')
+        );
         return;
       }
 

@@ -30,6 +30,7 @@ import { AggregatedStats } from '../../textsecure/WebsocketResources.preload.ts'
 import { UNAUTHENTICATED_CHANNEL_NAME } from '../../textsecure/SocketManager.preload.ts';
 import { isProduction } from '../../util/version.std.ts';
 import { LETTA_MODE } from '../../util/lettaMode.std.ts';
+import { isLettaAuthStatus } from '../../types/LettaAuth.std.ts';
 import { ToastType } from '../../types/Toast.dom.tsx';
 import { ConversationController } from '../../ConversationController.preload.ts';
 import { isEnabled } from '../../RemoteConfig.dom.ts';
@@ -111,6 +112,12 @@ const IPC: IPCType = {
   getMediaPermissions: () => ipc.invoke('settings:get:mediaPermissions'),
   getLettaTranscriptionConfig: () =>
     ipc.invoke('letta-transcription:get-config'),
+  getLettaAuthStatus: () => ipc.invoke('letta-auth:get-status'),
+  startLettaLogin: () => ipc.invoke('letta-auth:start-login'),
+  cancelLettaLogin: () => ipc.invoke('letta-auth:cancel-login'),
+  logoutLetta: () => ipc.invoke('letta-auth:logout'),
+  openLettaAuthorization: (url: string) =>
+    ipc.invoke('letta-auth:open-authorization', url),
   getMediaCameraPermissions: () =>
     ipc.invoke('settings:get:mediaCameraPermissions'),
   logAppLoadedEvent: ({ processedCount }) =>
@@ -246,6 +253,16 @@ type NetworkStatistics = {
   unauthorizedHealthcheckBadStatus?: string;
   unauthorizedIpVersionMismatches?: string;
 };
+
+// Letta auth status is pushed from the main process; forward it onto the
+// renderer event bus for React subscribers.
+ipc.on('letta-auth:status-changed', (_event, rawStatus) => {
+  if (!isLettaAuthStatus(rawStatus)) {
+    log.warn('ignoring malformed letta-auth:status-changed payload');
+    return;
+  }
+  window.Whisper.events.emit('letta-auth-status', rawStatus);
+});
 
 ipc.on('additional-log-data-request', async event => {
   const ourConversation = window.ConversationController.getOurConversation();

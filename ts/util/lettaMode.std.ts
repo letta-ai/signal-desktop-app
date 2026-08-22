@@ -11,30 +11,16 @@ export const LETTA_MODE: boolean = environment.LETTA_MODE !== '0';
 
 export const LETTA_APP_NAME = 'Signal Letta';
 
-function firstEnv(...names: Array<string>): string | undefined {
-  for (const name of names) {
-    const value = environment[name];
-    if (value?.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
+// The only canonical environment credential. When set, it overrides any
+// stored Letta OAuth session for both agent discovery and agent turns.
+export function lettaApiKeyFromEnvironment(
+  env: Record<string, string | undefined>
+): string | undefined {
+  return env.LETTA_API_KEY?.trim() || undefined;
 }
 
-// Agent discovery runs as the signed-in user.
-export const LETTA_API_KEY: string | undefined = firstEnv(
-  'LETTA_API_KEY',
-  'DEVELOPERS_API_KEY',
-  'COMPANY_LETTA_API_KEY'
-);
-
-// Agent turns can use a service credential for Cloud sandbox execution.
-export const LETTA_RUNTIME_API_KEY: string | undefined = firstEnv(
-  'LETTA_RUNTIME_API_KEY',
-  'DEVELOPERS_API_KEY',
-  'LETTA_API_KEY',
-  'COMPANY_LETTA_API_KEY'
-);
+export const LETTA_API_KEY: string | undefined =
+  lettaApiKeyFromEnvironment(environment);
 
 // Fixed, valid ACI-format UUID for our local identity. Never sent anywhere.
 export const LETTA_OUR_ACI = 'a1b2c3d4-1111-4111-8111-111111111111';
