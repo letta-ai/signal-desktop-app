@@ -17,16 +17,22 @@ pnpm install
 # 2. build the renderer/preload/main bundles
 pnpm generate
 
-# 3. launch with your Letta Cloud API key in the environment
-LETTA_API_KEY=sk-let-... pnpm start
+# 3. launch
+pnpm start
 ```
+
+On first launch the app shows a **Sign in with Letta** screen. Sign in opens the
+system browser and completes Letta's OAuth device authorization flow. Device
+flow does not redirect back to the desktop app; keep Signal Letta open and it
+will detect browser approval automatically. Access and refresh tokens are
+encrypted with Electron `safeStorage` in the main process and refreshed
+automatically before they expire. Log out under **Settings → Letta account**;
+local chats and cached agent contacts are kept.
 
 Optional env:
 
 - `LETTA_MODE=0` disables the demo integration and runs the upstream Signal behavior.
-- `LETTA_RUNTIME_API_KEY` uses a separate credential for agent turns.
-- `COMPANY_LETTA_API_KEY` and `DEVELOPERS_API_KEY` remain available as local
-  credential fallbacks.
+- `LETTA_API_KEY=sk-let-...` is an optional developer/CI override. When set, it is used for both agent discovery and agent turns, stored OAuth credentials are ignored while it is present, and it is never written to persistent storage.
 
 The app caches agent contacts and their dedicated Letta conversation IDs in
 Signal's isolated local profile. Later launches restore the same contacts and
@@ -43,6 +49,20 @@ conversations before refreshing the agent list.
 - `ts/services/letta.preload.ts` — SDK client and session lifecycle, boot identity
   seeding, cached agent contacts, dedicated conversations, remote history import,
   MemFS avatars, typing state, the send turn-loop, and streamed incoming bubbles.
+- `ts/services/lettaOAuthProvider.std.ts` — injectable-fetch OAuth device-flow
+  protocol operations (device code request, polling, rotation refresh, revoke,
+  access-token validation). Errors are typed; response bodies never appear in
+  error messages or logs.
+- `ts/services/lettaAuth.main.ts` — main-process authentication service. Stores
+  credentials encrypted with Electron `safeStorage` under a `userConfig`
+  `lettaAuth` key (rejecting Linux `basic_text`), keeps a stable device ID,
+  refreshes tokens before expiry with a single-flight promise, revokes on logout,
+  prefers `LETTA_API_KEY` without persisting it, and broadcasts sanitized status.
+- `ts/services/lettaAuthBridge.preload.ts` — narrow preload-only bridge for
+  credential lookup and status events. Deliberately not part of the renderer
+  `window.IPC` contract.
+- `ts/components/LettaAuthGate.dom.tsx` + `ts/state/smart/Inbox.preload.tsx` —
+  full-window sign-in gate shown instead of the inbox while signed out.
 - `.npmrc` — `verify-deps-before-run=false` (the local-tarball SDK dependency
   changes pnpm's allowBuilds set, which otherwise blocks scripts).
 

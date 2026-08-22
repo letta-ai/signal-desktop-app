@@ -1,0 +1,60 @@
+// Copyright 2026 Signal Messenger, LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
+@use '../mixins' as mixins;
+
+.LettaAuthGate {
+  align-items: center;
+  background: var(--axo-color-fill-primary);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  justify-content: center;
+  padding-inline: 24px;
+  text-align: center;
+  width: 100%;
+
+  &__title {
+    @include mixins.font-title-1;
+    color: var(--axo-color-label-primary);
+    margin-bottom: 8px;
+  }
+
+  &__subtitle {
+    @include mixins.font-body-1;
+    color: var(--axo-color-label-secondary);
+    margin-bottom: 24px;
+    max-width: 420px;
+  }
+
+  &__subtitle--error {
+    @include mixins.font-body-1;
+    color: var(--axo-color-label-destructive);
+    margin-bottom: 24px;
+    max-width: 420px;
+  }
+
+  &__code {
+    background: var(--axo-color-fill-secondary);
+    border-radius: 10px;
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: 4px;
+    margin-bottom: 8px;
+    padding-block: 12px;
+    padding-inline: 24px;
+  }
+
+  &__expiry {
+    @include mixins.font-caption;
+    color: var(--axo-color-label-secondary);
+    margin-bottom: 24px;
+  }
+
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+  }
+}

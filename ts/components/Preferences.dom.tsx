@@ -105,6 +105,7 @@ import { Emoji } from '../axo/emoji.std.ts';
 import { AxoConfirmDialog } from '../axo/AxoConfirmDialog.dom.tsx';
 import { LETTA_MODE } from '../util/lettaMode.std.ts';
 import { PreferencesTranscription } from './PreferencesTranscription.dom.tsx';
+import { PreferencesLettaAccount } from './PreferencesLettaAccount.dom.tsx';
 
 const { isNumber, noop, partition } = lodash;
 
@@ -115,6 +116,7 @@ const LETTA_SETTINGS_PAGES = new Set<SettingsPage>([
   SettingsPage.Chats,
   SettingsPage.Notifications,
   SettingsPage.Transcription,
+  SettingsPage.LettaAccount,
 ]);
 
 type CheckboxChangeHandlerType = (value: boolean) => unknown;
@@ -1757,6 +1759,14 @@ export function Preferences({
         title="Transcription"
       />
     );
+  } else if (settingsLocation.page === SettingsPage.LettaAccount) {
+    content = (
+      <PreferencesContent
+        contents={<PreferencesLettaAccount />}
+        contentsRef={settingsPaneRef}
+        title="Letta account"
+      />
+    );
   } else if (settingsLocation.page === SettingsPage.Privacy) {
     const isCustomDisappearingMessageValue =
       !DEFAULT_DURATIONS_SET.has(universalExpireTimer);
@@ -2810,20 +2820,36 @@ export function Preferences({
                 {i18n('icu:Preferences__button--notifications')}
               </button>
               {LETTA_MODE ? (
-                <button
-                  type="button"
-                  className={classNames({
-                    Preferences__button: true,
-                    'Preferences__button--transcription': true,
-                    'Preferences__button--selected':
-                      settingsLocation.page === SettingsPage.Transcription,
-                  })}
-                  onClick={() =>
-                    setSettingsLocation({ page: SettingsPage.Transcription })
-                  }
-                >
-                  Transcription
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className={classNames({
+                      Preferences__button: true,
+                      'Preferences__button--transcription': true,
+                      'Preferences__button--selected':
+                        settingsLocation.page === SettingsPage.Transcription,
+                    })}
+                    onClick={() =>
+                      setSettingsLocation({ page: SettingsPage.Transcription })
+                    }
+                  >
+                    Transcription
+                  </button>
+                  <button
+                    type="button"
+                    className={classNames({
+                      Preferences__button: true,
+                      'Preferences__button--letta-account': true,
+                      'Preferences__button--selected':
+                        settingsLocation.page === SettingsPage.LettaAccount,
+                    })}
+                    onClick={() =>
+                      setSettingsLocation({ page: SettingsPage.LettaAccount })
+                    }
+                  >
+                    Letta account
+                  </button>
+                </>
               ) : null}
               {!LETTA_MODE && (
                 <>

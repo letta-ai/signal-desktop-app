@@ -220,6 +220,10 @@
       @include preferences-icon('../images/icons/v3/mic/mic.svg');
     }
 
+    &--letta-account {
+      @include preferences-icon('../images/icons/v3/person/person.svg');
+    }
+
     &--privacy {
       @include preferences-icon('../images/icons/v3/lock/lock.svg');
     }
