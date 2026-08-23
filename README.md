@@ -28,15 +28,21 @@ nvm install
 nvm use
 pnpm install
 pnpm generate
-LETTA_API_KEY=sk-let-... pnpm start
+pnpm start
 ```
 
-`LETTA_API_KEY` is used for both agent discovery and agent turns by default. To run turns with a separate credential, set `LETTA_RUNTIME_API_KEY` as well.
+On first launch the app shows a **Sign in with Letta** screen. Signing in opens
+the system browser and uses Letta's device authorization flow. Device flow does
+not redirect back to the desktop app; keep Signal Letta open and it will detect
+browser approval automatically. Credentials are stored encrypted by the
+operating system's key store and refreshed automatically. Log out under
+**Settings → Letta account**; local chats and cached agent contacts are kept on
+logout.
 
 Optional settings:
 
 - `LETTA_MODE=0` runs the upstream Signal behavior instead of the demo integration.
-- `COMPANY_LETTA_API_KEY` and `DEVELOPERS_API_KEY` are accepted as local credential fallbacks.
+- `LETTA_API_KEY=sk-let-... pnpm start` skips sign in with an explicit developer or CI credential for both agent discovery and agent turns.
 - Voice transcription providers and their keys are configured inside the app under **Settings → Transcription**.
 
 The Agent SDK is vendored at version 0.7.1 so a fresh clone uses the exact SDK version this demo was tested against.

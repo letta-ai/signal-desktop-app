@@ -115,6 +115,7 @@ import { NativeThemeNotifier } from '../ts/main/NativeThemeNotifier.main.ts';
 import { PowerChannel } from '../ts/main/powerChannel.main.ts';
 import { SettingsChannel } from '../ts/main/settingsChannel.main.ts';
 import { installLettaTranscriptionService } from '../ts/services/lettaTranscription.main.ts';
+import { installLettaAuthService } from '../ts/services/lettaAuth.main.ts';
 import { maybeParseUrl, setUrlSearchParams } from '../ts/util/url.std.ts';
 import { getHeicConverter } from '../ts/workers/heicConverterMain.main.ts';
 
@@ -2188,6 +2189,7 @@ app.on('ready', async () => {
   settingsChannel = new SettingsChannel();
   settingsChannel.install();
   installLettaTranscriptionService();
+  installLettaAuthService();
 
   settingsChannel.on('change:systemTraySetting', async rawSystemTraySetting => {
     const { openAtLogin } = app.getLoginItemSettings(

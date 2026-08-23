@@ -14,6 +14,8 @@ import { useItemsActions } from '../ducks/items.preload.ts';
 import { getNavTabsCollapsed } from '../selectors/items.dom.ts';
 import { SmartChatsTab } from './ChatsTab.preload.tsx';
 import { SmartPreferences } from './Preferences.preload.tsx';
+import { LettaAuthGate } from '../../components/LettaAuthGate.dom.tsx';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 function renderChatsTab() {
   return <SmartChatsTab />;
@@ -47,7 +49,7 @@ export const SmartInbox = memo(function SmartInbox(): JSX.Element {
 
   const { toggleNavTabsCollapse } = useItemsActions();
 
-  return (
+  const inbox = (
     <Inbox
       isCustomizingPreferredReactions={isCustomizingPreferredReactions}
       navTabsCollapsed={navTabsCollapsed}
@@ -62,4 +64,12 @@ export const SmartInbox = memo(function SmartInbox(): JSX.Element {
       renderSettingsTab={renderSettingsTab}
     />
   );
+
+  // While signed out, the auth gate owns the whole window instead of showing
+  // an empty or broken inbox.
+  if (LETTA_MODE) {
+    return <LettaAuthGate>{inbox}</LettaAuthGate>;
+  }
+
+  return inbox;
 });

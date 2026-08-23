@@ -31,6 +31,7 @@ import type {
   LettaTranscriptionConfig,
   LettaTranscriptionProvider,
 } from './types/LettaTranscription.std.ts';
+import type { LettaAuthStatus } from './types/LettaAuth.std.ts';
 
 export type IPCType = {
   addSetupMenuItems: () => void;
@@ -52,6 +53,11 @@ export type IPCType = {
   ) => Promise<void>;
   getMediaPermissions: () => Promise<boolean | undefined>;
   getLettaTranscriptionConfig: () => Promise<LettaTranscriptionConfig>;
+  getLettaAuthStatus: () => Promise<LettaAuthStatus>;
+  startLettaLogin: () => Promise<LettaAuthStatus>;
+  cancelLettaLogin: () => Promise<LettaAuthStatus>;
+  logoutLetta: () => Promise<LettaAuthStatus>;
+  openLettaAuthorization: (url: string) => Promise<void>;
   whenWindowVisible: () => Promise<void>;
   logAppLoadedEvent?: (options: { processedCount?: number }) => void;
   readyForUpdates: () => void;
