@@ -2,789 +2,131 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 name: CI
+
 on:
   push:
     branches:
-      - development
       - main
-      - '[0-9]+.[0-9]+.x'
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  audit:
-    name: Dependencies
-    runs-on: ubuntu-22.04-8-cores
-    timeout-minutes: 30
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: Setup pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-      - name: Setup node.js
+
+      - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version-file: '.nvmrc'
-      - run: node --test .pnpmfile.mjs
-      - run: pnpm audit --audit-level=high
-      - run: pnpm audit signatures
-      - run: pnpm dedupe --check
-  lint:
-    name: Lint
-    runs-on: ubuntu-22.04-8-cores
-    timeout-minutes: 30
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
-    steps:
-    - run: lsb_release -a
-    - run: uname -a
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install Linux test dependencies
+        run: |
+          sudo apt-get install -y xvfb libpulse0 || (
+            sudo apt-get update
+            sudo apt-get install -y xvfb libpulse0
+          )
 
-    # - name: Setup sccache
-    #   uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
-    # - name: Restore sccache
-    #   uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-    #   with:
-    #     path: ${{ env.SCCACHE_PATH }}
-    #     key: sccache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'patches/**') }}
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
+          # electron:install-app-deps performs the native rebuild after install.
+          NPM_CONFIG_NODE_GYP: echo
 
-    - name: Install Desktop node_modules
-      run: pnpm install
-      env:
-        # CC: sccache gcc
-        # CXX: sccache g++
-        # SCCACHE_GHA_ENABLED: "true"
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: echo
+      - name: Check dependency policy
+        run: node --test .pnpmfile.mjs
 
-    - name: Install Sticker Creator node_modules
-      run: pnpm install
-      working-directory: sticker-creator
+      - name: Generate build artifacts
+        run: pnpm generate
 
-    - name: Install libpulse0
-      run: sudo apt-get install -y libpulse0 || (sudo apt-get update && sudo apt-get install -y libpulse0)
-    - run: pnpm run generate
-    - run: pnpm run build:db-schema --check
-    - run: pnpm run lint-prettier
-    - run: pnpm run lint-css
-    - run: pnpm run check:types
-    - run: pnpm run oxlint:ci
-    - run: pnpm run lint-deps
-    - run: pnpm run lint-license-comments
-    - run: pnpm run lint-intl
-    - run: pnpm run lint-knip:all --reporter github-actions
-    - run: pnpm run lint-knip:prod --reporter github-actions
-    - name: Check acknowledgments file is up to date
-      run: pnpm run build:acknowledgments
-      env:
-        REQUIRE_SIGNAL_LIB_FILES: 1
+      - name: Check database schema
+        run: pnpm build:db-schema --check
 
-    - run: git diff --exit-code
+      - name: Check formatting
+        run: pnpm lint-prettier
 
-  macos:
-    name: MacOS
-    needs: lint
-    runs-on: macos-26-arm64
-    if: github.ref == 'refs/heads/main'
-    timeout-minutes: 30
+      - name: Check styles
+        run: pnpm lint-css
 
-    steps:
-    - run: uname -a
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Check types
+        run: pnpm check:types
 
-    # - name: Setup sccache
-    #   uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
-    # - name: Restore sccache
-    #   uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-    #   with:
-    #     path: ${{ env.SCCACHE_PATH }}
-    #     key: sccache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'patches/**') }}
+      - name: Run Oxlint
+        run: pnpm oxlint:ci
 
-    - name: Install Desktop node_modules
-      run: pnpm install
-      env:
-        # CC: sccache clang
-        # CXX: sccache clang++
-        # SCCACHE_GHA_ENABLED: "true"
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: echo
-    - run: pnpm run prepare-beta-build
-    - run: pnpm run generate
-    - run: pnpm run test-node
-    - run: pnpm run test-electron
-      env:
-        ARTIFACTS_DIR: artifacts/macos
-        WORKER_COUNT: 4
-      timeout-minutes: 5
-    - run: touch noop.sh && chmod +x noop.sh
-    - run: pnpm run build
-      env:
-        # CC: sccache clang
-        # CXX: sccache clang++
-        # SCCACHE_GHA_ENABLED: "true"
-        DISABLE_INSPECT_FUSE: on
-        SIGN_MACOS_SCRIPT: noop.sh
-        ARTIFACTS_DIR: artifacts/macos
-    - name: Upload installer size
-      if: ${{ github.repository == 'signalapp/Signal-Desktop-Private' && github.ref == 'refs/heads/main' }}
-      run: |
-        node scripts/publish-installer-size.mjs macos-arm64
-        node scripts/publish-installer-size.mjs macos-x64
-        node scripts/publish-installer-size.mjs macos-universal
-    - run: pnpm run test-release
-      env:
-        NODE_ENV: production
+      - name: Check dependency boundaries
+        run: pnpm lint-deps
 
-    - name: Upload artifacts on failure
-      if: failure()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-      with:
-        path: artifacts
+      - name: Check license comments
+        run: pnpm lint-license-comments
 
-  linux:
-    name: Linux
-    needs: lint
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04-8-cores
-            arch: x64
-          - os: ubuntu-22.04-arm64-4-cores
-            arch: arm64
-    steps:
-    - run: lsb_release -a
-    - run: uname -a
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Check internationalization
+        run: pnpm lint-intl
 
-    - name: Install xvfb and libpulse0
-      run: sudo apt-get install xvfb libpulse0 || (sudo apt-get update && sudo apt-get install xvfb libpulse0)
+      - name: Check unused code
+        run: |
+          pnpm lint-knip:all --reporter github-actions
+          pnpm lint-knip:prod --reporter github-actions
 
-    # - name: Setup sccache
-    #   uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
-    # - name: Restore sccache
-    #   uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-    #   with:
-    #     path: ${{ env.SCCACHE_PATH }}
-    #     key: sccache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'patches/**') }}
+      - name: Run Node and Electron unit tests
+        run: xvfb-run --auto-servernum pnpm test-node
+        env:
+          LANG: en_US
+          LANGUAGE: en_US
 
-    - name: Install Desktop node_modules
-      run: pnpm install
-      env:
-        # CC: sccache gcc
-        # CXX: sccache g++
-        # SCCACHE_GHA_ENABLED: "true"
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: echo
+      - name: Run linter tests
+        run: |
+          pnpm test-lint-intl
+          pnpm test-oxlint
 
-    - run: pnpm run prepare-beta-build
-    - run: pnpm run generate
-
-    - name: Create preload cache
-      run: xvfb-run --auto-servernum pnpm run build:preload-cache
-      env:
-        ARTIFACTS_DIR: artifacts/linux
-
-    - name: Set Linux build target architecture
-      run: pnpm run prepare-linux-build deb ${{ matrix.arch }}
-
-    - name: Build with packaging .deb file
-      run: pnpm run build:release --publish=never
-      if: github.ref == 'refs/heads/main'
-      env:
-        # CC: sccache gcc
-        # CXX: sccache g++
-        # SCCACHE_GHA_ENABLED: "true"
-        DISABLE_INSPECT_FUSE: on
-    - name: Build without packaging .deb file
-      run: pnpm run build:release --linux dir
-      if: github.ref != 'refs/heads/main'
-      env:
-        # CC: sccache gcc
-        # CXX: sccache g++
-        # SCCACHE_GHA_ENABLED: "true"
-        DISABLE_INSPECT_FUSE: on
-
-    - name: Upload installer size
-      if: ${{ github.repository == 'signalapp/Signal-Desktop-Private' && github.ref == 'refs/heads/main' }}
-      run: node scripts/publish-installer-size.mjs linux-${{ matrix.arch }}
-
-    - run: xvfb-run --auto-servernum pnpm run test-node
-
-    - name: Clone backup integration tests
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      with:
-        repository: 'signalapp/Signal-Message-Backup-Tests'
-        ref: 'a0f900243210efbedc72f0907c5d2f140385daa4'
-        path: 'backup-integration-tests'
-
-    - run: xvfb-run --auto-servernum pnpm run test-electron
-      timeout-minutes: 5
-      env:
-        ARTIFACTS_DIR: artifacts/linux
-        LANG: en_US
-        LANGUAGE: en_US
-        BACKUP_INTEGRATION_DIR: 'backup-integration-tests/test-cases'
-        WORKER_COUNT: 8
-    - run: xvfb-run --auto-servernum pnpm run test-release
-      env:
-        NODE_ENV: production
-
-    - name: Upload artifacts on failure
-      if: failure()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-      with:
-        path: artifacts
-
-  windows:
-    name: Windows
-    needs: lint
-    runs-on: windows-latest-8-cores
-    timeout-minutes: 30
-    steps:
-    - run: systeminfo
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-
-    - run: touch noop.js
-    - name: Install Desktop node_modules
-      run: pnpm install
-      env:
-        NPM_CONFIG_LOGLEVEL: verbose
-        NPM_CONFIG_NODE_GYP: ${{ github.workspace }}\noop.js
-
-    - run: copy package.json temp.json
-    - run: del package.json
-    - run: type temp.json | findstr /v certificateSubjectName | findstr /v certificateSha1 > package.json
-    - run: pnpm run prepare-beta-build
-    - run: pnpm run generate
-    - run: pnpm run test-node
-
-    - name: Create preload cache
-      run: pnpm run build:preload-cache
-      env:
-        ARTIFACTS_DIR: artifacts/win
-
-    - name: Build with NSIS
-      run: pnpm run build:release
-      if: github.ref == 'refs/heads/main'
-      env:
-        DISABLE_INSPECT_FUSE: on
-    - name: Build without NSIS
-      run: pnpm run build:release --win dir
-      if: github.ref != 'refs/heads/main'
-      env:
-        DISABLE_INSPECT_FUSE: on
-
-    - name: Upload installer size
-      if: ${{ github.repository == 'signalapp/Signal-Desktop-Private' && github.ref == 'refs/heads/main' }}
-      run: node scripts/publish-installer-size.mjs windows
-
-    - run: pnpm run test-electron
-      env:
-        ARTIFACTS_DIR: artifacts/windows
-        WORKER_COUNT: 4
-      timeout-minutes: 5
-    - run: pnpm run test-release
-      env:
-        SIGNAL_ENV: production
-
-    - name: Upload artifacts on failure
-      if: failure()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-      with:
-        path: artifacts
-
-  sticker-creator:
-    name: Sticker Creator
-    runs-on: ubuntu-22.04-8-cores
-    timeout-minutes: 30
-
-    defaults:
-      run:
-        working-directory: sticker-creator
-
-    steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-
-    - name: Install Sticker Creator node_modules
-      run: pnpm install
-
-    - name: Build Sticker Creator
-      run: pnpm run build
-
-    - name: Check Sticker Creator types
-      run: pnpm run check:types
-
-    - name: Check Sticker Creator formatting
-      run: pnpm run prettier:check
-
-    - name: Check Sticker Creator linting
-      run: pnpm run lint
-
-  mock-tests:
-    name: Mock Tests
-    needs: lint
-
-    strategy:
-      fail-fast: false
-      matrix:
-        workerIndex: [0, 1, 2, 3]
-
-    runs-on: ubuntu-latest-8-cores
-    if: ${{ github.repository == 'signalapp/Signal-Desktop-Private' }}
-    timeout-minutes: 30
-
-    steps:
-    - name: Get system specs
-      run: lsb_release -a
-    - name: Get other system specs
-      run: uname -a
-
-    - name: Clone Desktop repo
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-
-    - name: Update apt
-      run: sudo apt-get update
-
-    - name: Install xvfb and libpulse0
-      run: sudo apt-get install -y xvfb libpulse0
-
-    # - name: Setup sccache
-    #   uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
-    # - name: Restore sccache
-    #   uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-    #   with:
-    #     path: ${{ env.SCCACHE_PATH }}
-    #     key: sccache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'patches/**') }}
-
-    - name: Install Desktop node_modules
-      run: |
-        pnpm install
-        ./node_modules/.bin/install-electron
-        sudo chown root node_modules/.pnpm/electron@*/node_modules/electron/dist/chrome-sandbox
-        sudo chmod 4755 node_modules/.pnpm/electron@*/node_modules/electron/dist/chrome-sandbox
-      env:
-        # CC: sccache gcc
-        # CXX: sccache g++
-        # SCCACHE_GHA_ENABLED: "true"
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: echo
-
-    - name: Build typescript
-      run: pnpm run generate
-    - name: Create preload cache
-      run: xvfb-run --auto-servernum pnpm run build:preload-cache
-      env:
-        ARTIFACTS_DIR: artifacts/linux
-
-    - name: Run mock server tests
-      run: |
-        set -o pipefail
-        xvfb-run --auto-servernum pnpm run test-mock
-      timeout-minutes: 15
-      env:
-        NODE_ENV: production
-        DEBUG: mock:test:*
-        ARTIFACTS_DIR: artifacts/mock
-        WORKER_INDEX: ${{ matrix.workerIndex }}
-        WORKER_COUNT: 4
-
-    - name: Run docker mock server tests
-      if: ${{ matrix.workerIndex == 0 }}
-      run: |
-        set -o pipefail
-        sudo apt-get install -y pipewire pipewire-pulse wireplumber psmisc pulseaudio-utils
-        systemctl --user start pipewire.service
-        systemctl --user start pipewire-pulse.service
-        xvfb-run --auto-servernum pnpm run test-mock-docker
-      timeout-minutes: 10
-      env:
-        NODE_ENV: production
-        DEBUG: mock:test:*
-        ARTIFACTS_DIR: artifacts/mock-docker
-
-    - name: Upload mock server test logs on failure
-      if: failure()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-      with:
-        name: logs-${{ matrix.workerIndex }}
-        path: artifacts
-
-  check-min-os-version:
-    name: Check Min OS Version
-    needs: lint
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-
-    steps:
-    - run: uname -a
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-
-    - name: Install Desktop node_modules
-      if: matrix.os != 'windows-latest'
-      run: pnpm install
-      env:
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: echo
-
-    - run: touch noop.js
-      if: matrix.os == 'windows-latest'
-
-    - name: Install Desktop node_modules on Windows
-      if: matrix.os == 'windows-latest'
-      run: pnpm install
-      env:
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: ${{ github.workspace }}\noop.js
-
-    - run: pnpm generate:phase-0
-    - name: Run OS version check
-      run: |
-        node scripts/check-min-os-version.mjs
+      - name: Check generated files
+        run: git diff --exit-code
 
   danger:
     name: Danger
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write
       pull-requests: write
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: Setup pnpm
         uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-      - name: Setup node.js
+
+      - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version-file: '.nvmrc'
-          package-manager-cache: false # Avoid cache key clashes
-      - name: Install danger node_modules
-        run: pnpm install
+          package-manager-cache: false
+
+      - name: Install Danger dependencies
+        run: pnpm install --frozen-lockfile
         working-directory: danger
+
       - name: Run DangerJS
-        run: pnpm run danger:ci
+        run: pnpm danger:ci
         working-directory: danger
         env:
           DANGER_GITHUB_API_TOKEN: ${{ secrets.AUTOMATED_GITHUB_PAT || github.token }}
-
-  storybook:
-    name: Storybook
-    runs-on: ubuntu-latest-8-cores
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Setup pnpm
-        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-      - name: Setup node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'pnpm'
-          cache-dependency-path: 'pnpm-lock.yaml'
-      - name: Cache .electron-gyp
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.electron-gyp
-          key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-
-      # - name: Setup sccache
-      #   uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
-      # - name: Restore sccache
-      #   uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      #   id: cache-sccache
-      #   with:
-      #     path: ${{ env.SCCACHE_PATH }}
-      #     key: sccache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'patches/**') }}
-
-      - name: Install Desktop node_modules
-        run: pnpm install
-        env:
-          # CC: sccache gcc
-          # CXX: sccache g++
-          # SCCACHE_GHA_ENABLED: "true"
-          NPM_CONFIG_LOGLEVEL: verbose
-          # We rebuild in `electron:install-app-deps` that doesn't look at this
-          # environment variable
-          NPM_CONFIG_NODE_GYP: echo
-
-      - run: pnpm run build:storybook
-      - run: ./node_modules/.bin/playwright install chromium
-      - run: ./node_modules/.bin/run-p --race test:storybook:serve test:storybook:test
-
-  benchmark:
-    name: Benchmark
-    strategy:
-      matrix:
-        metric:
-          - startup
-          - send
-          - groupSend
-          - largeGroupSendWithBlocks
-          - largeGroupSend
-          - convoOpen
-          - callHistorySearch
-          - backup
-        include:
-          - metric: startup
-            script: ts/test-mock/benchmarks/startup_bench.node.js
-            runCount: 10
-          - metric: send
-            script: ts/test-mock/benchmarks/send_bench.node.js
-            runCount: 100
-          - metric: groupSend
-            script: ts/test-mock/benchmarks/group_send_bench.node.js
-            runCount: 100
-            conversationSize: 500
-          - metric: largeGroupSendWithBlocks
-            script: ts/test-mock/benchmarks/group_send_bench.node.js
-            runCount: 50
-            conversationSize: 500
-            groupSize: 500
-            contactCount: 500
-            blockedCount: 10
-            discardCount: 2
-          - metric: largeGroupSend
-            script: ts/test-mock/benchmarks/group_send_bench.node.js
-            runCount: 20
-            conversationSize: 50
-            groupSize: 500
-            contactCount: 500
-            discardCount: 2
-          - metric: convoOpen
-            script: ts/test-mock/benchmarks/convo_open_bench.node.js
-            runCount: 100
-          - metric: callHistorySearch
-            script: ts/test-mock/benchmarks/call_history_search_bench.node.js
-            runCount: 100
-          - metric: backup
-            script: ts/test-mock/benchmarks/backup_bench.node.js
-
-    runs-on: ubuntu-22.04-8-cores
-    if: ${{ github.repository == 'signalapp/Signal-Desktop-Private' }}
-    timeout-minutes: 30
-
-    steps:
-    - name: Get system specs
-      run: lsb_release -a
-    - name: Get other system specs
-      run: uname -a
-
-    - name: Clone Desktop repo
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-    # - name: Setup sccache
-    #   uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
-    # - name: Restore sccache
-    #   uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-    #   id: cache-sccache
-    #   with:
-    #     path: ${{ env.SCCACHE_PATH }}
-    #     key: sccache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'patches/**') }}
-
-    - name: Setup pnpm
-      uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
-    - name: Setup node.js
-      uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-      with:
-        node-version-file: '.nvmrc'
-        cache: 'pnpm'
-        cache-dependency-path: 'pnpm-lock.yaml'
-    - name: Cache .electron-gyp
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      with:
-        path: ~/.electron-gyp
-        key: electron-gyp-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-    - name: Install xvfb and libpulse0
-      run: sudo apt-get install xvfb libpulse0 || (sudo apt-get update && sudo apt-get install xvfb libpulse0)
-
-    - name: Install Desktop node_modules
-      run: pnpm install
-      env:
-        # CC: sccache gcc
-        # CXX: sccache g++
-        # SCCACHE_GHA_ENABLED: "true"
-        NPM_CONFIG_LOGLEVEL: verbose
-        # We rebuild in `electron:install-app-deps` that doesn't look at this
-        # environment variable
-        NPM_CONFIG_NODE_GYP: echo
-
-    - name: Build typescript
-      run: pnpm run generate
-    - name: Create preload cache
-      run: xvfb-run --auto-servernum pnpm run build:preload-cache
-
-    - name: Set MAX_CYCLES=2 on main
-      if: ${{ github.ref == 'refs/heads/main' }}
-      run: |
-        echo "MAX_CYCLES=2" >> "$GITHUB_ENV"
-
-    - name: Run ${{ matrix.metric }}
-      run: |
-        set -o pipefail
-        xvfb-run --auto-servernum ./node_modules/.bin/tsx \
-          ${{ matrix.script }} | tee benchmark.log
-      timeout-minutes: 10
-      env:
-        NODE_ENV: production
-        ELECTRON_ENABLE_STACK_DUMPING: on
-        DEBUG: 'mock:benchmarks'
-        ARTIFACTS_DIR: artifacts/${{ matrix.metric }}
-        GROUP_SIZE: ${{ matrix.groupSize }}
-        CONTACT_COUNT: ${{ matrix.contactCount }}
-        BLOCKED_COUNT: ${{ matrix.blockedCount }}
-        DISCARD_COUNT: ${{ matrix.discardCount }}
-        RUN_COUNT: ${{ matrix.runCount }}
-        CONVERSATION_SIZE: ${{ matrix.conversationSize }}
-
-    - name: Upload benchmark logs on failure
-      if: failure()
-      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-      with:
-        name: logs
-        path: artifacts
-
-    - name: Clone benchmark repo
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      with:
-        repository: 'signalapp/Signal-Desktop-Benchmarks-Private'
-        path: 'benchmark-results'
-        token: ${{ secrets.AUTOMATED_GITHUB_PAT }}
-
-    - name: Build benchmark repo
-      working-directory: benchmark-results
-      run: |
-        pnpm install
-        pnpm run build
-
-    - name: Publish
-      working-directory: benchmark-results
-      run: |
-        node ./bin/publish.js ../benchmark.log desktop.ci.performance.${{ matrix.metric }}
-      env:
-        OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
-        OTEL_EXPORTER_OTLP_PROTOCOL: ${{ secrets.OTEL_EXPORTER_OTLP_PROTOCOL }}
-        OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
-
-  auto-merge-ready:
-    if: ${{ github.event_name == 'pull_request' && github.repository == 'signalapp/Signal-Desktop-Private' }}
-    name: Auto Merge Ready
-    needs:
-      - lint
-      - linux
-      - windows
-      - sticker-creator
-      - mock-tests
-      - check-min-os-version
-      - danger
-      - storybook
-      - benchmark
-    runs-on: ubuntu-latest
-    steps:
-      - name: Ok
-        run: echo ok

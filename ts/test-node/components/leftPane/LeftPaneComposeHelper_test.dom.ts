@@ -13,7 +13,16 @@ import {
   getDefaultGroupListItem,
 } from '../../../test-helpers/getDefaultConversation.std.ts';
 
-import { LeftPaneComposeHelper } from '../../../components/leftPane/LeftPaneComposeHelper.dom.tsx';
+import {
+  LeftPaneComposeHelper as RuntimeLeftPaneComposeHelper,
+  type LeftPaneComposePropsType,
+} from '../../../components/leftPane/LeftPaneComposeHelper.dom.tsx';
+
+class LeftPaneComposeHelper extends RuntimeLeftPaneComposeHelper {
+  constructor(props: Readonly<LeftPaneComposePropsType>) {
+    super(props, { isLettaMode: false });
+  }
+}
 
 describe('LeftPaneComposeHelper', () => {
   let sinonSandbox: sinon.SinonSandbox;
@@ -24,6 +33,56 @@ describe('LeftPaneComposeHelper', () => {
 
   afterEach(() => {
     sinonSandbox.restore();
+  });
+
+  describe('Letta mode', () => {
+    it('hides Signal-specific creation and lookup rows', () => {
+      const helper = new RuntimeLeftPaneComposeHelper(
+        {
+          composeContacts: [],
+          composeGroups: [],
+          regionCode: 'US',
+          searchTerm: '+16505551234',
+          uuidFetchState: {},
+          username: 'someone',
+        },
+        { isLettaMode: true }
+      );
+
+      assert.strictEqual(helper.getRowCount(), 0);
+      assert.isUndefined(helper.getRow(0));
+    });
+
+    it('keeps agent results visible for username-like searches', () => {
+      const composeContacts = [
+        getDefaultConversation(),
+        getDefaultConversation(),
+      ] as const;
+      const helper = new RuntimeLeftPaneComposeHelper(
+        {
+          composeContacts,
+          composeGroups: [],
+          regionCode: 'US',
+          searchTerm: 'agent-loop',
+          uuidFetchState: {},
+          username: 'agent-loop',
+        },
+        { isLettaMode: true }
+      );
+
+      assert.strictEqual(helper.getRowCount(), 3);
+      assert.deepEqual(_testHeaderText(helper.getRow(0)), 'icu:contactsHeader');
+      assert.deepEqual(helper.getRow(1), {
+        type: RowType.Contact,
+        contact: composeContacts[0],
+        hasContextMenu: true,
+      });
+      assert.deepEqual(helper.getRow(2), {
+        type: RowType.Contact,
+        contact: composeContacts[1],
+        hasContextMenu: true,
+      });
+    });
   });
 
   describe('getBackAction', () => {

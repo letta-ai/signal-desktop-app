@@ -41,6 +41,9 @@ const FILES_TO_IGNORE = [
   '.smartling-source.sh',
   'packages/mute-state-change/dist/acknowledgments.md',
   'packages/lame/dist/acknowledgments.md',
+  // Spec documents start with YAML frontmatter and cannot carry the standard
+  // Markdown license header without breaking frontmatter parsing.
+  'specs/SPEC-*.md',
   'sticker-creator/src/util/protos.d.ts',
   'sticker-creator/src/util/protos.js',
 ];

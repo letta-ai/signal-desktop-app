@@ -3,8 +3,8 @@
 
 import type { LettaTranscriptionProvider } from '../types/LettaTranscription.std.ts';
 
-export const LETTA_TRANSCRIPTION_MAX_BYTES = 25 * 1024 * 1024;
-export const LETTA_TRANSCRIPTION_TIMEOUT_MS = 60_000;
+const LETTA_TRANSCRIPTION_MAX_BYTES = 25 * 1024 * 1024;
+const LETTA_TRANSCRIPTION_TIMEOUT_MS = 60_000;
 
 type FetchType = (
   input: string | URL | Request,
