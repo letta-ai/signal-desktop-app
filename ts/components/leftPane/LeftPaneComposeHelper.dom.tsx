@@ -30,6 +30,10 @@ export type LeftPaneComposePropsType = {
   username: string | undefined;
 };
 
+type LeftPaneComposeOptionsType = {
+  isLettaMode?: boolean;
+};
+
 enum TopButtons {
   None = 'None',
   Visible = 'Visible',
@@ -45,30 +49,35 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
   readonly #isPhoneNumberVisible: boolean;
   readonly #username: string | undefined;
   readonly #isUsernameVisible: boolean;
+  readonly #isLettaMode: boolean;
 
-  constructor({
-    composeContacts,
-    composeGroups,
-    regionCode,
-    searchTerm,
-    uuidFetchState,
-    username,
-  }: Readonly<LeftPaneComposePropsType>) {
+  constructor(
+    {
+      composeContacts,
+      composeGroups,
+      regionCode,
+      searchTerm,
+      uuidFetchState,
+      username,
+    }: Readonly<LeftPaneComposePropsType>,
+    { isLettaMode = LETTA_MODE }: Readonly<LeftPaneComposeOptionsType> = {}
+  ) {
     super();
 
     this.#composeContacts = composeContacts;
     this.#composeGroups = composeGroups;
     this.#searchTerm = searchTerm;
     this.#uuidFetchState = uuidFetchState;
+    this.#isLettaMode = isLettaMode;
 
     this.#username = username;
     this.#isUsernameVisible =
-      !LETTA_MODE &&
+      !this.#isLettaMode &&
       Boolean(username) &&
       this.#composeContacts.every(contact => contact.username !== username);
 
     const phoneNumber = parseAndFormatPhoneNumber(searchTerm, regionCode);
-    if (!LETTA_MODE && !username && phoneNumber) {
+    if (!this.#isLettaMode && !username && phoneNumber) {
       this.#phoneNumber = phoneNumber;
       this.#isPhoneNumberVisible = this.#composeContacts.every(
         contact => contact.e164 !== phoneNumber.e164
@@ -120,7 +129,7 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
         moduleClassName="module-left-pane__compose-search-form"
         onChange={onChangeComposeSearchTerm}
         placeholder={
-          LETTA_MODE
+          this.#isLettaMode
             ? 'Search agents by name or id'
             : i18n('icu:contactSearchPlaceholder')
         }
@@ -286,7 +295,9 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
   shouldRecomputeRowHeights(
     exProps: Readonly<LeftPaneComposePropsType>
   ): boolean {
-    const prev = new LeftPaneComposeHelper(exProps);
+    const prev = new LeftPaneComposeHelper(exProps, {
+      isLettaMode: this.#isLettaMode,
+    });
     const currHeaderIndices = this.#getHeaderIndices();
     const prevHeaderIndices = prev.#getHeaderIndices();
 
@@ -300,7 +311,7 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
   }
 
   #getTopButtons(): TopButtons {
-    if (LETTA_MODE || this.#searchTerm) {
+    if (this.#isLettaMode || this.#searchTerm) {
       return TopButtons.None;
     }
     return TopButtons.Visible;
@@ -313,14 +324,14 @@ export class LeftPaneComposeHelper extends LeftPaneHelper<LeftPaneComposePropsTy
   #hasContactsHeader(): boolean {
     return (
       Boolean(this.#composeContacts.length) &&
-      !isProbablyAUsername(this.#searchTerm)
+      (this.#isLettaMode || !isProbablyAUsername(this.#searchTerm))
     );
   }
 
   #hasGroupsHeader(): boolean {
     return (
       Boolean(this.#composeGroups.length) &&
-      !isProbablyAUsername(this.#searchTerm)
+      (this.#isLettaMode || !isProbablyAUsername(this.#searchTerm))
     );
   }
 

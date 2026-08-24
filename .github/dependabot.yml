@@ -11,11 +11,3 @@ updates:
     minor-actions-dependencies:
       # GitHub Actions: Only group minor and patch updates (we want to carefully review major updates)
       update-types: [ minor, patch ]
-
-- package-ecosystem: npm
-  directories:
-    - "/"
-  schedule:
-    interval: daily
-  allow:
-    - dependency-name: electron

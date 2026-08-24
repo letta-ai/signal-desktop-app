@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Signal Messenger, LLC -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
 # Signal Desktop × Letta fork notes
 
 This fork is a demo of connecting the **Letta Agent SDK** to an existing desktop

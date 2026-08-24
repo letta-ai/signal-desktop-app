@@ -11,7 +11,7 @@
 export const LETTA_OAUTH_CLIENT_ID = 'ci-let-94bf2d5e34984a684fb6b18880b6bc7d';
 
 export const LETTA_OAUTH_AUTH_BASE_URL = 'https://app.letta.com';
-export const LETTA_OAUTH_API_BASE_URL = 'https://api.letta.com';
+const LETTA_OAUTH_API_BASE_URL = 'https://api.letta.com';
 
 const DEVICE_CODE_PATH = '/api/oauth/device/code';
 const TOKEN_PATH = '/api/oauth/token';
