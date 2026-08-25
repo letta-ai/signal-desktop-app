@@ -37,6 +37,7 @@ import { tw } from '../../axo/tw.dom.tsx';
 export type FunPickerProps = Readonly<{
   open: boolean;
   isReply: boolean;
+  emojiOnly?: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectEmoji: (emojiSelection: FunEmojiSelection) => void;
   onSelectSticker: (stickerSelection: FunStickerSelection) => void;
@@ -50,7 +51,7 @@ export type FunPickerProps = Readonly<{
 export const FunPicker = memo(function FunPicker(
   props: FunPickerProps
 ): JSX.Element {
-  const { isReply, onOpenChange, onSelectSticker } = props;
+  const { isReply, emojiOnly = false, onOpenChange, onSelectSticker } = props;
   const fun = useFunContext();
   const {
     i18n,
@@ -89,25 +90,35 @@ export const FunPicker = memo(function FunPicker(
   }, [stagedStickerReply, handleClose, onFunSelectSticker, onSelectSticker]);
 
   useEffect(() => {
+    if (emojiOnly && fun.tab !== FunPickerTabKey.EmojisTab) {
+      onChangeTab(FunPickerTabKey.EmojisTab);
+    }
+  }, [emojiOnly, fun.tab, onChangeTab]);
+
+  useEffect(() => {
     const onKeyDown = createKeybindingsHandler({
       '$mod+Shift+J': () => {
         onChangeTab(FunPickerTabKey.EmojisTab);
         handleOpenChange(true);
       },
-      '$mod+Shift+O': () => {
-        onChangeTab(FunPickerTabKey.StickersTab);
-        handleOpenChange(true);
-      },
-      '$mod+Shift+G': () => {
-        onChangeTab(FunPickerTabKey.GifsTab);
-        handleOpenChange(true);
-      },
+      ...(emojiOnly
+        ? {}
+        : {
+            '$mod+Shift+O': () => {
+              onChangeTab(FunPickerTabKey.StickersTab);
+              handleOpenChange(true);
+            },
+            '$mod+Shift+G': () => {
+              onChangeTab(FunPickerTabKey.GifsTab);
+              handleOpenChange(true);
+            },
+          }),
     });
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [handleOpenChange, onChangeTab]);
+  }, [emojiOnly, handleOpenChange, onChangeTab]);
 
   return (
     <DialogTrigger isOpen={props.open} onOpenChange={handleOpenChange}>
@@ -116,7 +127,7 @@ export const FunPicker = memo(function FunPicker(
         <FunTabs value={fun.tab} onChange={fun.onChangeTab}>
           <StagedStickerReply
             i18n={i18n}
-            selection={stagedStickerReply}
+            selection={emojiOnly ? null : stagedStickerReply}
             handleCancelStickerReply={handleCancelStickerReply}
             handleSendStickerReply={handleSendStickerReply}
           />
@@ -124,12 +135,16 @@ export const FunPicker = memo(function FunPicker(
             <FunPickerTab id={FunPickerTabKey.EmojisTab}>
               {i18n('icu:FunPicker__Tab--Emojis')}
             </FunPickerTab>
-            <FunPickerTab id={FunPickerTabKey.StickersTab}>
-              {i18n('icu:FunPicker__Tab--Stickers')}
-            </FunPickerTab>
-            <FunPickerTab id={FunPickerTabKey.GifsTab}>
-              {i18n('icu:FunPicker__Tab--Gifs')}
-            </FunPickerTab>
+            {!emojiOnly && (
+              <FunPickerTab id={FunPickerTabKey.StickersTab}>
+                {i18n('icu:FunPicker__Tab--Stickers')}
+              </FunPickerTab>
+            )}
+            {!emojiOnly && (
+              <FunPickerTab id={FunPickerTabKey.GifsTab}>
+                {i18n('icu:FunPicker__Tab--Gifs')}
+              </FunPickerTab>
+            )}
           </FunTabList>
           <FunTabPanel id={FunPickerTabKey.EmojisTab}>
             <FunErrorBoundary>
@@ -141,25 +156,29 @@ export const FunPicker = memo(function FunPicker(
               />
             </FunErrorBoundary>
           </FunTabPanel>
-          <FunTabPanel id={FunPickerTabKey.StickersTab}>
-            <FunErrorBoundary>
-              <FunPanelStickers
-                isReply={isReplyForFunPanel}
-                showTimeStickers={false}
-                onSelectSticker={props.onSelectSticker}
-                onAddStickerPack={props.onAddStickerPack}
-                onClose={handleClose}
-              />
-            </FunErrorBoundary>
-          </FunTabPanel>
-          <FunTabPanel id={FunPickerTabKey.GifsTab}>
-            <FunErrorBoundary>
-              <FunPanelGifs
-                onSelectGif={props.onSelectGif}
-                onClose={handleClose}
-              />
-            </FunErrorBoundary>
-          </FunTabPanel>
+          {!emojiOnly && (
+            <FunTabPanel id={FunPickerTabKey.StickersTab}>
+              <FunErrorBoundary>
+                <FunPanelStickers
+                  isReply={isReplyForFunPanel}
+                  showTimeStickers={false}
+                  onSelectSticker={props.onSelectSticker}
+                  onAddStickerPack={props.onAddStickerPack}
+                  onClose={handleClose}
+                />
+              </FunErrorBoundary>
+            </FunTabPanel>
+          )}
+          {!emojiOnly && (
+            <FunTabPanel id={FunPickerTabKey.GifsTab}>
+              <FunErrorBoundary>
+                <FunPanelGifs
+                  onSelectGif={props.onSelectGif}
+                  onClose={handleClose}
+                />
+              </FunErrorBoundary>
+            </FunTabPanel>
+          )}
         </FunTabs>
       </FunPopover>
     </DialogTrigger>

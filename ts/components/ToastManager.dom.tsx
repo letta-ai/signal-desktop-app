@@ -511,7 +511,7 @@ function renderToast({
 
   if (toastType === ToastType.LettaSendError) {
     return (
-      <Toast autoDismissDisabled onClose={hideToast}>
+      <Toast onClose={hideToast} style={{ maxWidth: '320px' }}>
         {toast.parameters.message}
       </Toast>
     );

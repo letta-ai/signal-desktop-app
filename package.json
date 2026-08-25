@@ -124,7 +124,7 @@
   "dependencies": {
     "@indutny/mac-screen-share": "1.2.5",
     "@indutny/simple-windows-notifications": "2.0.21",
-    "@letta-ai/letta-agent-sdk": "file:vendor/letta-ai-letta-agent-sdk-0.7.1.tgz",
+    "@letta-ai/letta-agent-sdk": "file:vendor/letta-ai-letta-agent-sdk-0.7.6.tgz",
     "@signalapp/libsignal-client": "0.99.2",
     "@signalapp/mute-state-change": "workspace:*",
     "@signalapp/ringrtc": "2.70.2",

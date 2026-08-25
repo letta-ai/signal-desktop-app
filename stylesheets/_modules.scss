@@ -1698,6 +1698,20 @@ $message-padding-horizontal: 12px;
   align-items: center;
 }
 
+.module-letta-working-status {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  padding-block: 8px;
+  padding-inline: 16px;
+
+  &__text {
+    color: var(--axo-color-label-secondary);
+    font-size: 14px;
+    line-height: 20px;
+  }
+}
+
 .module-message__reactions {
   position: relative;
   z-index: variables.$z-index-above-base;

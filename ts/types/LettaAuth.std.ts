@@ -32,6 +32,27 @@ export type LettaAuthStatus =
       recoverable: boolean;
     };
 
+export type LettaCredentialCheck =
+  | { state: 'ok' }
+  | { state: 'invalid' }
+  | { state: 'unreachable' }
+  | { state: 'signed-out' };
+
+export function isLettaCredentialCheck(
+  value: unknown
+): value is LettaCredentialCheck {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const state = (value as { state?: unknown }).state;
+  return (
+    state === 'ok' ||
+    state === 'invalid' ||
+    state === 'unreachable' ||
+    state === 'signed-out'
+  );
+}
+
 function isLettaAuthErrorCode(value: unknown): value is LettaAuthErrorCode {
   return (
     value === 'secure-storage-unavailable' ||
@@ -72,4 +93,17 @@ export function isLettaAuthStatus(value: unknown): value is LettaAuthStatus {
     default:
       return false;
   }
+}
+
+// Whisper emits the payload as the first argument. IPC listeners receive
+// (event, payload). Accept either shape so sign-in status cannot get stuck.
+export function readLettaAuthStatus(
+  ...args: unknown[]
+): LettaAuthStatus | undefined {
+  for (const arg of args) {
+    if (isLettaAuthStatus(arg)) {
+      return arg;
+    }
+  }
+  return undefined;
 }

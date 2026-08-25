@@ -126,11 +126,12 @@ conversations before refreshing the agent list.
 - Agent and conversation management use the SDK's `agents` and `conversations`
   namespaces. The profile-picture endpoint remains a direct API call because the
   portable SDK does not expose it.
-- SDK version is **0.7.1**, vendored as a relative tarball under `vendor/` and
-  referenced from `package.json` as `file:vendor/letta-ai-letta-agent-sdk-0.7.1.tgz`
+- SDK version is **0.7.6**, vendored as a relative tarball under `vendor/` and
+  referenced from `package.json` as `file:vendor/letta-ai-letta-agent-sdk-0.7.6.tgz`
   so a fresh clone uses the exact SDK version tested with this demo. To move to
-  the npm package later: `pnpm add -w @letta-ai/letta-agent-sdk@^0.7.1` and
-  delete `vendor/`.
+  the npm package later: `pnpm add -w @letta-ai/letta-agent-sdk@^0.7.6` and
+  delete `vendor/`. Opening a chat calls `session.ready()` to warm the Cloud
+  sandbox before the first send.
 
 ## Known limitations / v1 scope cuts
 

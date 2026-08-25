@@ -340,6 +340,8 @@ export class ConversationModel {
     }
   >;
 
+  lettaWorkingStatus?: string;
+
   contactCollection?: Array<ConversationModel>;
 
   debouncedUpdateLastMessage: (() => void) & { flush(): void };
@@ -5903,6 +5905,14 @@ export class ConversationModel {
     return { url, path };
   }
 
+  setLettaWorkingStatus(status: string | undefined): void {
+    if (this.lettaWorkingStatus === status) {
+      return;
+    }
+    this.lettaWorkingStatus = status;
+    window.ConversationController.conversationUpdated(this, this.attributes);
+  }
+
   notifyTyping(options: {
     isTyping: boolean;
     senderId: string;
@@ -6076,6 +6086,9 @@ export class ConversationModel {
   onOpenStart(): void {
     log.info(`conversation ${this.idForLogging()} open start`);
     window.ConversationController.onConvoOpenStart(this.id);
+    if (LETTA_MODE) {
+      drop(window.lettaService?.warmConversation(this.id));
+    }
   }
 
   onOpenComplete(startedAt: number): void {

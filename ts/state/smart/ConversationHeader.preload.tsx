@@ -19,6 +19,7 @@ import { getGroupMemberships } from '../../util/getGroupMemberships.dom.ts';
 import { isConversationSMSOnly } from '../../util/isConversationSMSOnly.std.ts';
 import { isGroupOrAdhocCallState } from '../../util/isGroupOrAdhocCall.std.ts';
 import { isSignalConversation } from '../../util/isSignalConversation.dom.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import { missingCaseError } from '../../util/missingCaseError.std.ts';
 import { getConversationCallMode } from '../../util/getConversationCallMode.std.ts';
 import { useCallingActions } from '../ducks/calling.preload.ts';
@@ -52,7 +53,6 @@ import { SmartMiniPlayer } from './MiniPlayer.preload.tsx';
 import { SmartPinnedMessagesBar } from './PinnedMessagesBar.preload.tsx';
 import { getContactSpoofingWarningSelector } from '../selectors/timeline.preload.ts';
 import { useNavActions } from '../ducks/nav.std.ts';
-import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 function renderCollidingAvatars(
   props: SmartCollidingAvatarsProps
@@ -79,6 +79,10 @@ const useOutgoingCallButtonStyle = (
   const activeCall = useSelector(getActiveCallState);
   const callSelector = useSelector(getCallSelector);
   strictAssert(ourAci, 'useOutgoingCallButtonStyle missing our uuid');
+
+  if (LETTA_MODE) {
+    return OutgoingCallButtonStyle.None;
+  }
 
   if (activeCall?.conversationId === conversation.id) {
     return OutgoingCallButtonStyle.None;

@@ -15,6 +15,7 @@ import type { PreferredBadgeSelectorType } from '../../state/selectors/badges.pr
 import { drop } from '../../util/drop.std.ts';
 import { useReducedMotion } from '../../hooks/useReducedMotion.dom.ts';
 import type { ContactModalStateType } from '../../types/globalModals.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 const MAX_AVATARS_COUNT = 3;
 
@@ -35,6 +36,7 @@ export type TypingBubblePropsType = {
   conversationId: string;
   conversationType: 'group' | 'direct';
   typingContactIdTimestamps: Record<string, number>;
+  lettaWorkingStatus?: string;
   lastItemAuthorId: string | undefined;
   lastItemTimestamp: number | undefined;
   getConversation: (id: string) => ConversationType;
@@ -262,6 +264,7 @@ export function TypingBubble({
   conversationId,
   conversationType,
   typingContactIdTimestamps,
+  lettaWorkingStatus,
   lastItemAuthorId,
   lastItemTimestamp,
   getConversation,
@@ -271,6 +274,10 @@ export function TypingBubble({
   theme,
 }: TypingBubblePropsType): ReactElement | null {
   const [isVisible, setIsVisible] = useState(false);
+  const lastLettaStatus = useRef<string | undefined>(undefined);
+  if (lettaWorkingStatus) {
+    lastLettaStatus.current = lettaWorkingStatus;
+  }
 
   const typingContactIds = useMemo(
     () => Object.keys(typingContactIdTimestamps),
@@ -281,8 +288,11 @@ export function TypingBubble({
     undefined
   );
   const isSomeoneTyping = useMemo(
-    () => typingContactIds.length > 0,
-    [typingContactIds]
+    () =>
+      LETTA_MODE
+        ? Boolean(lettaWorkingStatus)
+        : typingContactIds.length > 0,
+    [lettaWorkingStatus, typingContactIds]
   );
 
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- FIXME
@@ -333,6 +343,9 @@ export function TypingBubble({
   // When only one person is typing and they just sent a new message, then instantly
   // hide the bubble without animation to seamlessly transition to their new message.
   useEffect(() => {
+    if (LETTA_MODE || lettaWorkingStatus) {
+      return;
+    }
     if (
       typingContactIds.length !== 1 ||
       !lastItemAuthorId ||
@@ -356,6 +369,7 @@ export function TypingBubble({
     lastItemTimestamp,
     typingContactIds,
     typingContactIdTimestamps,
+    lettaWorkingStatus,
   ]);
 
   // Only animate when the user observes a change in typing contacts, not when first
@@ -380,6 +394,26 @@ export function TypingBubble({
   }
 
   const isGroup = conversationType === 'group';
+  const shownLettaStatus = lettaWorkingStatus || lastLettaStatus.current;
+
+  if (LETTA_MODE && shownLettaStatus) {
+    return (
+      <animated.div
+        className="module-timeline__typing-bubble-container"
+        style={outerDivStyle}
+      >
+        <div
+          className="module-letta-working-status"
+          aria-live="polite"
+          role="status"
+        >
+          <span className="module-letta-working-status__text">
+            {shownLettaStatus}
+          </span>
+        </div>
+      </animated.div>
+    );
+  }
 
   return (
     <animated.div

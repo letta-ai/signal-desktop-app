@@ -38,6 +38,7 @@ import { repeat, zipObject } from '../util/iterables.std.ts';
 import { getMessageIdForLogging } from '../util/idForLogging.preload.ts';
 import { getStoryReplyContext } from '../util/getStoryReplyContext.std.ts';
 import { drop } from '../util/drop.std.ts';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 import * as reactionUtil from '../reactions/util.std.ts';
 import { isNewReactionReplacingPrevious } from '../reactions/util.std.ts';
 import { notificationService } from '../services/notifications.preload.ts';
@@ -617,7 +618,18 @@ export async function handleReaction(
         revision: conversation.get('revision'),
       };
     }
-    if (shouldPersist) {
+    if (LETTA_MODE) {
+      if (shouldPersist) {
+        await window.MessageCache.saveMessage(message.attributes);
+      }
+      drop(
+        window.lettaService?.sendReaction(conversation.id, {
+          emoji: reaction.emoji ?? '',
+          remove: Boolean(reaction.remove),
+          targetText: message.get('body') ?? '',
+        })
+      );
+    } else if (shouldPersist) {
       await conversationJobQueue.add(jobData, async jobToInsert => {
         log.info(
           `enqueueReactionForSend: saving message ${getMessageIdForLogging(message.attributes)} and job ${

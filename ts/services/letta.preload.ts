@@ -6,6 +6,7 @@
 // Replaces Signal's protocol send/receive with the Letta Agent SDK. Each
 // Letta agent is a private contact backed by a dedicated conversation.
 
+import { createHash } from 'node:crypto';
 import { v5 as uuidv5 } from 'uuid';
 import {
   LettaAgentClient,
@@ -43,6 +44,21 @@ import type { AciString } from '../types/ServiceId.std.ts';
 import { IMAGE_PNG } from '../types/MIME.std.ts';
 import { ToastType, type AnyToast } from '../types/Toast.dom.tsx';
 import { formatLettaMarkdown } from '../util/lettaMarkdown.std.ts';
+import {
+  formatLettaQuotedSend,
+  formatLettaReactionSend,
+  formatLettaWorkingLine,
+  getRandomThinkingVerb,
+  type LettaToolStatusInput,
+} from '../util/lettaThinking.std.ts';
+import {
+  baseAgentName,
+  formatLettaError,
+  isForeignLettaChat,
+  isMissingAgent,
+  isMissingLettaConversation,
+  isUnauthorized,
+} from '../util/lettaSendErrors.std.ts';
 import { cleanupMessages } from '../util/cleanup.preload.ts';
 import {
   LETTA_MODE,
@@ -70,7 +86,12 @@ const SUPPORTED_IMAGE_MEDIA_TYPES = [
   'image/gif',
   'image/webp',
 ] as const;
-const CONTACT_CACHE_KEY = 'lettaAgentContactsV1';
+const CONTACT_CACHE_PREFIX = 'lettaAgentContactsV1';
+
+function contactCacheStorageKey(apiKey: string): string {
+  const digest = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+  return `${CONTACT_CACHE_PREFIX}:${digest}`;
+}
 
 const untypedStorage = itemStorage as unknown as {
   get(key: string): unknown;
@@ -91,6 +112,12 @@ type AgentSummary = {
   name?: string | null;
   hidden?: boolean | null;
 };
+
+type AgentRebind =
+  | { status: 'rebound'; contact: AgentContact }
+  | { status: 'present' }
+  | { status: 'missing' }
+  | { status: 'unknown' };
 
 type HistoryMessage = LettaConversationMessage & {
   message_type: 'user_message' | 'assistant_message';
@@ -114,19 +141,25 @@ type AvatarLoad = {
 };
 
 function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}`;
-  }
-  return String(error);
+  return formatLettaError(error);
 }
 
-function visibleSendError(error?: unknown): string {
+function visibleSendError(error?: unknown, directoryReady = false): string {
   const detail = error == null ? '' : formatError(error);
   if (detail.includes('Insufficient credits')) {
     return 'Message not sent. Add at least $1 in Letta organization credits.';
   }
-  if (detail.includes('401 Unauthorized')) {
+  if (isForeignLettaChat(error, directoryReady)) {
+    return 'Message not sent. This chat is not available with the current Letta account. Start a new chat.';
+  }
+  if (isUnauthorized(error)) {
     return 'Message not sent. Letta authentication failed.';
+  }
+  if (isMissingAgent(error)) {
+    return 'Message not sent. Letta could not find this agent on the signed-in account.';
+  }
+  if (isMissingLettaConversation(error)) {
+    return 'Message not sent. The Letta conversation no longer exists. Try again to start a new one.';
   }
   if (detail.includes('Cloud managed sandbox session closed')) {
     return 'Message not sent. The Letta execution environment closed during startup.';
@@ -231,6 +264,28 @@ function isSupportedImageMediaType(
   return SUPPORTED_IMAGE_MEDIA_TYPES.some(mediaType => mediaType === value);
 }
 
+function latestInFlightTool(
+  rows: ReadonlyArray<TranscriptRow>
+): LettaToolStatusInput | undefined {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row?.kind === 'tool_call' && row.status !== 'complete') {
+      return { toolName: row.toolName, toolInput: row.toolInput };
+    }
+  }
+  return undefined;
+}
+
+function hasAssistantText(rows: ReadonlyArray<TranscriptRow>): boolean {
+  return rows.some(
+    row => row.kind === 'assistant' && Boolean(row.text?.trim())
+  );
+}
+
+function emitLettaAgentsChanged(): void {
+  window.Whisper.events.emit('letta-agents-changed');
+}
+
 function isClosedCloudSession(error: unknown): boolean {
   return (
     error instanceof CloudManagedSandboxExpiredError ||
@@ -262,6 +317,8 @@ class LettaService {
     string,
     ReturnType<typeof setInterval>
   >();
+  readonly #thinkingVerbs = new Map<string, string>();
+  #directoryStatus: 'idle' | 'loading' | 'ready' | 'error' = 'idle';
   readonly #avatarQueue: Array<AvatarLoad> = [];
   readonly #queuedAvatarAgentIds = new Set<string>();
   #activeAvatarLoads = 0;
@@ -280,6 +337,29 @@ class LettaService {
 
   isEnabled(): boolean {
     return LETTA_MODE;
+  }
+
+  getInitError(): string | undefined {
+    return this.#initError;
+  }
+
+  getDirectoryState(): {
+    status: 'idle' | 'loading' | 'ready' | 'error';
+    error?: string;
+  } {
+    return {
+      status: this.#directoryStatus,
+      error: this.#initError,
+    };
+  }
+
+  async retryInitialize(): Promise<void> {
+    this.#initPromise = undefined;
+    this.#initError = undefined;
+    this.#directoryStatus = 'loading';
+    emitLettaAgentsChanged();
+    await this.initialize();
+    emitLettaAgentsChanged();
   }
 
   async seedIdentity(): Promise<void> {
@@ -318,26 +398,11 @@ class LettaService {
       }
       if (this.#contacts.size === 0) {
         log.warn('bootstrapConversation: no agent contacts');
+        this.#hideUnownedConversations();
         return;
       }
 
-      const ourId = window.ConversationController.getOurConversationId();
-      const keep = new Set(
-        [...this.#contacts.values()].map(contact => contact.conversationId)
-      );
-      if (ourId) {
-        keep.add(ourId);
-      }
-
-      for (const other of window.ConversationController.getAll()) {
-        if (keep.has(other.id)) {
-          continue;
-        }
-        if (other.get('active_at') != null || other.get('isPinned')) {
-          other.set({ active_at: null, isPinned: false });
-          drop(DataWriter.updateConversation(other.attributes));
-        }
-      }
+      this.#hideUnownedConversations();
 
       const mostRecent = [...this.#contacts.values()]
         .map(contact => ({
@@ -370,7 +435,17 @@ class LettaService {
     if (!LETTA_MODE) {
       return Promise.resolve();
     }
-    this.#initPromise ??= this.#doInitialize();
+    if (!this.#initPromise) {
+      this.#directoryStatus = 'loading';
+      emitLettaAgentsChanged();
+      this.#initPromise = (async () => {
+        try {
+          await this.#doInitialize();
+        } finally {
+          emitLettaAgentsChanged();
+        }
+      })();
+    }
     return this.#initPromise;
   }
 
@@ -447,8 +522,10 @@ class LettaService {
     this.#directoryClient = undefined;
     this.#initPromise = undefined;
     this.#initError = undefined;
+    this.#directoryStatus = 'idle';
     this.#authSource = undefined;
     this.#apiKey = undefined;
+    this.#contacts.clear();
   }
 
   async #doInitialize(): Promise<void> {
@@ -461,12 +538,15 @@ class LettaService {
     if (!credential) {
       // Being signed out is a normal state, not an error; the auth gate owns
       // the UI until sign-in completes.
+      this.#contacts.clear();
       this.#initError = undefined;
+      this.#directoryStatus = 'idle';
       log.info('initialize: signed out of Letta');
       return;
     }
     this.#authSource = credential.source;
     this.#apiKey = credential.apiKey;
+    this.#contacts.clear();
 
     this.#client = new LettaAgentClient({
       backend: 'cloud',
@@ -484,15 +564,12 @@ class LettaService {
     } as ConstructorParameters<typeof LettaAgentClient>[0]);
 
     try {
-      const restored = await this.#restoreCachedContacts();
-      if (restored > 0) {
-        log.info('restored cached agent contacts', { count: restored });
-        drop(this.#loadAgentContacts());
-      } else {
-        await this.#loadAgentContacts();
-      }
+      await this.#loadAgentContacts();
+      this.#initError = undefined;
+      this.#directoryStatus = 'ready';
     } catch (error) {
       this.#initError = `Could not list Letta agents: ${formatError(error)}`;
+      this.#directoryStatus = 'error';
       log.error(this.#initError);
     }
   }
@@ -502,17 +579,42 @@ class LettaService {
       return;
     }
 
-    const usedNames = new Set(
-      [...this.#contacts.values()].map(contact => contact.name)
-    );
-    const firstBatch = await this.#listAgentPage();
-    await this.#addAgentContacts(firstBatch, usedNames);
+    const cachedConversationIds = this.#readCachedConversationIds();
+    const usedNames = new Set<string>();
+    const live = await this.#listOwnedVisibleAgents();
+    this.#restoringContacts = true;
+    try {
+      for (const agent of live.slice(0, MAX_AGENT_CONTACTS)) {
+        // Contact creation mutates the shared name and contact indexes.
+        // oxlint-disable-next-line no-await-in-loop
+        const conversationId = await this.#ensureContact(agent, usedNames);
+        const contact = conversationId
+          ? this.#contacts.get(conversationId)
+          : undefined;
+        const lettaConversationId = cachedConversationIds.get(agent.id);
+        if (contact && lettaConversationId) {
+          contact.lettaConversationId = lettaConversationId;
+        }
+      }
+    } finally {
+      this.#restoringContacts = false;
+    }
 
     const legacy = window.ConversationController.get(LETTA_LEGACY_PEER_ACI);
     if (legacy && !this.#contacts.has(legacy.id)) {
       legacy.set({ active_at: null, isPinned: false });
       drop(DataWriter.updateConversation(legacy.attributes));
     }
+
+    this.#hideUnownedConversations();
+
+    await Promise.all(
+      [...this.#contacts.values()].map(async contact => {
+        await this.#removeLegacyErrorBubbles(contact);
+        await this.#hydrateRemoteHistory(contact);
+        await this.#reconcileContactVisibility(contact);
+      })
+    );
 
     log.info('loaded agent contacts', {
       count: this.#contacts.size,
@@ -523,14 +625,54 @@ class LettaService {
     if (this.#contacts.size === 0) {
       log.warn('no named people agents found; inbox stays empty until search');
     }
+  }
 
-    const after = firstBatch[firstBatch.length - 1]?.id;
-    if (
-      after &&
-      firstBatch.length === AGENT_PAGE_SIZE &&
-      this.#contacts.size < MAX_AGENT_CONTACTS
-    ) {
-      drop(this.#loadMoreAgentContacts(after, usedNames));
+  async #listOwnedVisibleAgents(): Promise<Array<AgentSummary>> {
+    const owned: Array<AgentSummary> = [];
+    const seen = new Set<string>();
+    let after: string | undefined;
+    for (let page = 0; page < MAX_AGENT_PAGES; page += 1) {
+      // Pages depend on the cursor returned by the previous page.
+      // oxlint-disable-next-line no-await-in-loop
+      const batch = await this.#listAgentPage(after);
+      if (batch.length === 0) {
+        break;
+      }
+      for (const agent of this.#chooseAgentContacts(batch)) {
+        if (!agent.id || seen.has(agent.id)) {
+          continue;
+        }
+        seen.add(agent.id);
+        owned.push(agent);
+      }
+      if (batch.length < AGENT_PAGE_SIZE) {
+        break;
+      }
+      after = batch[batch.length - 1]?.id;
+      if (!after) {
+        break;
+      }
+    }
+    return owned;
+  }
+
+  #hideUnownedConversations(): void {
+    const ourId = window.ConversationController.getOurConversationId();
+    const keep = new Set(
+      [...this.#contacts.values()].map(contact => contact.conversationId)
+    );
+    if (ourId) {
+      keep.add(ourId);
+    }
+
+    for (const other of window.ConversationController.getAll()) {
+      if (keep.has(other.id)) {
+        continue;
+      }
+      if (other.get('active_at') != null || other.get('isPinned')) {
+        other.set({ active_at: null, isPinned: false });
+        drop(DataWriter.updateConversation(other.attributes));
+      }
     }
   }
 
@@ -544,56 +686,6 @@ class LettaService {
       orderBy: 'createdAt',
       after,
     });
-  }
-
-  async #loadMoreAgentContacts(
-    initialAfter: string,
-    usedNames: Set<string>
-  ): Promise<void> {
-    let after: string | undefined = initialAfter;
-    for (let page = 1; page < MAX_AGENT_PAGES; page += 1) {
-      let batch: Array<AgentSummary>;
-      try {
-        // Pages depend on the cursor returned by the previous page.
-        // oxlint-disable-next-line no-await-in-loop
-        batch = await this.#listAgentPage(after);
-      } catch (error) {
-        log.warn('agents.list page failed', formatError(error));
-        break;
-      }
-      if (batch.length === 0) {
-        break;
-      }
-      // Preserve contact limits and stable duplicate-name suffixes across pages.
-      // oxlint-disable-next-line no-await-in-loop
-      await this.#addAgentContacts(batch, usedNames);
-      // oxlint-disable-next-line no-await-in-loop
-      await this.#persistContacts();
-      log.info('loaded more agent contacts', { count: this.#contacts.size });
-      if (this.#contacts.size >= MAX_AGENT_CONTACTS) {
-        break;
-      }
-      after = batch[batch.length - 1]?.id;
-      if (batch.length < AGENT_PAGE_SIZE) {
-        break;
-      }
-    }
-  }
-
-  async #addAgentContacts(
-    agents: Array<AgentSummary>,
-    usedNames: Set<string>
-  ): Promise<void> {
-    const remaining = MAX_AGENT_CONTACTS - this.#contacts.size;
-    if (remaining <= 0) {
-      return;
-    }
-    const chosen = this.#chooseAgentContacts(agents).slice(0, remaining);
-    for (const agent of chosen) {
-      // Contact creation mutates the shared name and contact indexes.
-      // oxlint-disable-next-line no-await-in-loop
-      await this.#ensureContact(agent, usedNames);
-    }
   }
 
   #chooseAgentContacts(agents: Array<AgentSummary>): Array<AgentSummary> {
@@ -770,65 +862,48 @@ class LettaService {
     return conversation.id;
   }
 
-  async #restoreCachedContacts(): Promise<number> {
-    const cached = untypedStorage.get(CONTACT_CACHE_KEY);
-    if (!Array.isArray(cached)) {
-      return 0;
-    }
-
-    const usedNames = new Set<string>();
-    this.#restoringContacts = true;
-    try {
-      for (const value of cached.slice(0, 100)) {
+  #readCachedConversationIds(): Map<string, string> {
+    const ids = new Map<string, string>();
+    const apiKey = this.#apiKey;
+    const keys = [
+      ...(apiKey ? [contactCacheStorageKey(apiKey)] : []),
+      CONTACT_CACHE_PREFIX,
+    ];
+    for (const key of keys) {
+      const cached = untypedStorage.get(key);
+      if (!Array.isArray(cached)) {
+        continue;
+      }
+      for (const value of cached) {
         if (!value || typeof value !== 'object') {
           continue;
         }
-        const { agentId, name, lettaConversationId } = value as {
+        const { agentId, lettaConversationId } = value as {
           agentId?: unknown;
-          name?: unknown;
           lettaConversationId?: unknown;
         };
         if (
           typeof agentId !== 'string' ||
           !/^agent-[0-9a-f-]{36}$/i.test(agentId) ||
-          typeof name !== 'string' ||
-          !name.trim()
+          typeof lettaConversationId !== 'string' ||
+          !/^conv-[0-9a-f-]{36}$/i.test(lettaConversationId) ||
+          ids.has(agentId)
         ) {
           continue;
         }
-        // Contact restoration may merge an older synthetic identity.
-        // oxlint-disable-next-line no-await-in-loop
-        const conversationId = await this.#ensureContact(
-          { id: agentId, name },
-          usedNames
-        );
-        const restored = conversationId
-          ? this.#contacts.get(conversationId)
-          : undefined;
-        if (
-          restored &&
-          typeof lettaConversationId === 'string' &&
-          /^conv-[0-9a-f-]{36}$/i.test(lettaConversationId)
-        ) {
-          restored.lettaConversationId = lettaConversationId;
-        }
+        ids.set(agentId, lettaConversationId);
       }
-    } finally {
-      this.#restoringContacts = false;
     }
-    await Promise.all(
-      [...this.#contacts.values()].map(async contact => {
-        await this.#removeLegacyErrorBubbles(contact);
-        await this.#hydrateRemoteHistory(contact);
-        await this.#reconcileContactVisibility(contact);
-      })
-    );
-    return this.#contacts.size;
+    return ids;
   }
 
   async #persistContacts(): Promise<void> {
+    const apiKey = this.#apiKey;
+    if (!apiKey) {
+      return;
+    }
     await untypedStorage.put(
-      CONTACT_CACHE_KEY,
+      contactCacheStorageKey(apiKey),
       [...this.#contacts.values()].map(
         ({ agentId, name, lettaConversationId }) => ({
           agentId,
@@ -1144,11 +1219,41 @@ class LettaService {
     }
     const conversationId = outgoingModel.get('conversationId') ?? '';
     const body = (outgoingModel.get('body') ?? '').trim();
+    return this.#enqueueTurn(conversationId, () =>
+      this.#runTurn(conversationId, body, outgoingModel)
+    );
+  }
+
+  sendReaction(
+    conversationId: string,
+    reaction: Readonly<{
+      emoji: string;
+      remove: boolean;
+      targetText?: string;
+    }>
+  ): Promise<void> {
+    if (!LETTA_MODE) {
+      return Promise.resolve();
+    }
+    const text = formatLettaReactionSend(
+      reaction.emoji,
+      reaction.remove,
+      reaction.targetText
+    );
+    return this.#enqueueTurn(conversationId, () =>
+      this.#runTurn(conversationId, text)
+    );
+  }
+
+  #enqueueTurn(
+    conversationId: string,
+    work: () => Promise<void>
+  ): Promise<void> {
     const previous = this.#turnChains.get(conversationId) ?? Promise.resolve();
     const next = (async () => {
       await previous;
       try {
-        await this.#runTurn(conversationId, body, outgoingModel);
+        await work();
       } catch (error) {
         log.error('turn failed', formatError(error));
       }
@@ -1178,12 +1283,16 @@ class LettaService {
       }
     | undefined
   > {
+    const sendText = formatLettaQuotedSend(
+      text,
+      outgoingModel.get('quote')?.text
+    );
     const attachments = outgoingModel.get('attachments') ?? [];
     if (attachments.length === 0) {
-      return text
+      return sendText
         ? {
-            message: text,
-            inputTextLength: text.length,
+            message: sendText,
+            inputTextLength: sendText.length,
             imageCount: 0,
             imageBytes: 0,
           }
@@ -1206,9 +1315,13 @@ class LettaService {
         data: bytes,
         contentType: mediaType,
       });
+      const message = formatLettaQuotedSend(
+        transcript,
+        outgoingModel.get('quote')?.text
+      );
       return {
-        message: transcript,
-        inputTextLength: transcript.length,
+        message,
+        inputTextLength: message.length,
         imageCount: 0,
         imageBytes: 0,
       };
@@ -1255,10 +1368,10 @@ class LettaService {
 
     return {
       message: [
-        { type: 'text', text: text || '[Image]' },
+        { type: 'text', text: sendText || '[Image]' },
         ...images.map(image => image.content),
       ],
-      inputTextLength: text.length,
+      inputTextLength: sendText.length,
       imageCount: images.length,
       imageBytes,
     };
@@ -1267,41 +1380,63 @@ class LettaService {
   async #runTurn(
     conversationId: string,
     text: string,
-    outgoingModel: MessageModel
+    outgoingModel?: MessageModel
   ): Promise<void> {
-    this.#startTyping(conversationId);
+    this.#startWorking(conversationId);
     try {
       await this.initialize();
       let contact = this.#contacts.get(conversationId);
       if (!contact || !this.#client) {
-        this.#markOutgoingFailed(
-          outgoingModel,
-          new Error('Letta authentication required')
+        const error = new Error(
+          !this.#client
+            ? 'Letta authentication required'
+            : '404 Agent not found'
         );
+        if (outgoingModel) {
+          this.#markOutgoingFailed(outgoingModel, error);
+        } else {
+          this.#showSendError(this.#visibleSendError(error));
+        }
         return;
       }
 
       let prepared;
       try {
-        prepared = await this.#prepareSendMessage(outgoingModel, text);
+        prepared = outgoingModel
+          ? await this.#prepareSendMessage(outgoingModel, text)
+          : {
+              message: text,
+              inputTextLength: text.length,
+              imageCount: 0,
+              imageBytes: 0,
+            };
       } catch (error) {
         log.error('message attachment preparation failed', {
           signalConversationId: conversationId,
-          signalMessageId: outgoingModel.id,
-          attachmentCount: outgoingModel.get('attachments')?.length ?? 0,
+          signalMessageId: outgoingModel?.id,
+          attachmentCount: outgoingModel?.get('attachments')?.length ?? 0,
           error: formatError(error),
         });
-        this.#markOutgoingFailed(outgoingModel, error);
+        if (outgoingModel) {
+          this.#markOutgoingFailed(outgoingModel, error);
+        } else {
+          this.#showSendError(this.#visibleSendError(error));
+        }
         return;
       }
       if (!prepared) {
-        this.#markOutgoingDelivered(outgoingModel);
+        if (outgoingModel) {
+          this.#markOutgoingFailed(
+            outgoingModel,
+            new Error('Unsupported attachment type')
+          );
+        }
         return;
       }
 
       const turnContext = {
         signalConversationId: conversationId,
-        signalMessageId: outgoingModel.id,
+        signalMessageId: outgoingModel?.id,
         agentId: contact.agentId,
         agentName: contact.name,
         textLength: prepared.inputTextLength,
@@ -1319,37 +1454,44 @@ class LettaService {
           session,
           prepared.message
         );
+        contact = this.#contacts.get(conversationId) ?? contact;
       } catch (error) {
         log.error('session.send failed', {
           ...turnContext,
           error: formatError(error),
         });
-        this.#markOutgoingFailed(outgoingModel, error);
+        if (outgoingModel) {
+          this.#markOutgoingFailed(outgoingModel, error);
+        } else {
+          this.#showSendError(this.#visibleSendError(error));
+        }
         return;
       }
 
-      this.#markOutgoingDelivered(outgoingModel);
-
       const transcript = createTranscriptAccumulator();
       const bubbles = new Map<string, MessageModel>();
+      let sawResult = false;
       try {
         for await (const message of session.stream()) {
           const rows = transcript.apply(message);
-          if (
-            bubbles.size === 0 &&
-            rows.some(row => row.kind === 'assistant')
-          ) {
-            this.#setTyping(conversationId, false);
-          }
+          this.#updateWorkingStatus(conversationId, rows);
           await this.#renderRows(conversationId, rows, bubbles);
 
           if (message.type === 'result') {
+            sawResult = true;
             await this.#finalizeTurn({
               ...turnContext,
+              signalMessageId: outgoingModel?.id ?? '',
               result: message,
               bubbles,
             });
+            if (outgoingModel && message.success) {
+              this.#markOutgoingDelivered(outgoingModel);
+            }
           }
+        }
+        if (outgoingModel && !sawResult) {
+          this.#markOutgoingDelivered(outgoingModel);
         }
       } catch (error) {
         log.error('stream failed', {
@@ -1357,13 +1499,65 @@ class LettaService {
           error: formatError(error),
           assistantBubbleCount: bubbles.size,
         });
-        if (bubbles.size === 0) {
+        if (outgoingModel) {
           this.#markOutgoingFailed(outgoingModel, error);
+        } else {
+          this.#showSendError(this.#visibleSendError(error));
         }
       }
     } finally {
-      this.#stopTyping(conversationId);
+      this.#stopWorking(conversationId);
     }
+  }
+
+  #startWorking(conversationId: string): void {
+    const conversation = window.ConversationController.get(conversationId);
+    const agentName = conversation?.getTitle() ?? 'Agent';
+    const verb = getRandomThinkingVerb();
+    this.#thinkingVerbs.set(conversationId, verb);
+    this.#setWorkingStatus(
+      conversationId,
+      formatLettaWorkingLine(agentName, undefined, verb)
+    );
+    this.#startTyping(conversationId);
+  }
+
+  #updateWorkingStatus(
+    conversationId: string,
+    rows: ReadonlyArray<TranscriptRow>
+  ): void {
+    const conversation = window.ConversationController.get(conversationId);
+    const agentName = conversation?.getTitle() ?? 'Agent';
+    const tool = latestInFlightTool(rows);
+    if (tool) {
+      this.#setWorkingStatus(
+        conversationId,
+        formatLettaWorkingLine(agentName, tool)
+      );
+      return;
+    }
+    if (hasAssistantText(rows)) {
+      this.#setWorkingStatus(conversationId, undefined);
+      return;
+    }
+    const verb =
+      this.#thinkingVerbs.get(conversationId) ?? getRandomThinkingVerb();
+    this.#setWorkingStatus(
+      conversationId,
+      formatLettaWorkingLine(agentName, undefined, verb)
+    );
+  }
+
+  #stopWorking(conversationId: string): void {
+    this.#thinkingVerbs.delete(conversationId);
+    this.#setWorkingStatus(conversationId, undefined);
+    this.#stopTyping(conversationId);
+  }
+
+  #setWorkingStatus(conversationId: string, status: string | undefined): void {
+    window.ConversationController.get(conversationId)?.setLettaWorkingStatus(
+      status
+    );
   }
 
   #startTyping(conversationId: string): void {
@@ -1412,29 +1606,55 @@ class LettaService {
       throw new Error('Letta session is not available');
     }
 
-    let lettaConversationId = contact.lettaConversationId;
+    let current = contact;
+    if (!current.lettaConversationId) {
+      current = await this.#createLettaConversation(current);
+    }
+    const lettaConversationId = current.lettaConversationId;
     if (!lettaConversationId) {
-      const conversation = await this.#client.conversations.create({
-        agentId: contact.agentId,
-      });
-      lettaConversationId = conversation.id;
-      this.#contacts.set(contact.conversationId, {
-        ...contact,
-        lettaConversationId,
-      });
-      await this.#persistContacts();
-      log.info('Signal conversation linked to Letta conversation', {
-        agentId: contact.agentId,
-        lettaConversationId,
-      });
+      throw new Error('Letta session is not available');
     }
 
     const session = this.#client.resumeSession(
       lettaConversationId,
       this.#sessionOptions()
     );
-    this.#sessions.set(contact.agentId, session);
+    this.#sessions.set(current.agentId, session);
+    drop(this.#readySession(session));
     return session;
+  }
+
+  // Warm the Cloud sandbox when the user opens a chat, before they hit send.
+  // session.ready() is idempotent and does not invoke the model.
+  async warmConversation(conversationId: string): Promise<void> {
+    if (!LETTA_MODE) {
+      return;
+    }
+    try {
+      await this.initialize();
+      const contact = this.#contacts.get(conversationId);
+      if (!contact || !this.#client) {
+        return;
+      }
+      const session = await this.#sessionFor(contact);
+      await this.#readySession(session);
+    } catch (error) {
+      log.warn('sandbox warmup failed', {
+        conversationId,
+        error: formatError(error),
+      });
+    }
+  }
+
+  async #readySession(session: LettaCodeSession): Promise<void> {
+    const started = Date.now();
+    const info = await session.ready();
+    log.info('session ready', {
+      agentId: info.agentId,
+      conversationId: info.conversationId,
+      model: info.model,
+      durationMs: Date.now() - started,
+    });
   }
 
   #sessionOptions() {
@@ -1524,11 +1744,13 @@ class LettaService {
     }
 
     if (!result.success) {
-      const message = visibleSendError(
+      const message = this.#visibleSendError(
         result.errorDetail ?? result.error ?? result.errorCode
       );
-      const outgoingModel = window.MessageCache.getById(signalMessageId);
-      if (bubbles.size === 0 && outgoingModel) {
+      const outgoingModel = signalMessageId
+        ? window.MessageCache.getById(signalMessageId)
+        : undefined;
+      if (outgoingModel) {
         this.#markOutgoingFailed(outgoingModel, message);
       } else {
         this.#showSendError(message);
@@ -1557,6 +1779,7 @@ class LettaService {
     message: SendMessage
   ): Promise<LettaCodeSession> {
     try {
+      await this.#readySession(session);
       await session.send(message);
       return session;
     } catch (error) {
@@ -1566,17 +1789,235 @@ class LettaService {
         contact.lettaConversationId
       ) {
         log.info('sandbox expired; rebuilding session');
-        session.close();
-        const next = this.#client.resumeSession(
-          contact.lettaConversationId,
-          this.#sessionOptions()
-        );
-        this.#sessions.set(contact.agentId, next);
-        await next.send(message);
-        return next;
+        this.#closeSession(contact.agentId);
+        return this.#resumeAndSend(contact, message);
+      }
+      if (isMissingLettaConversation(error) && this.#client) {
+        log.info('letta conversation missing; creating a new one', {
+          agentId: contact.agentId,
+          lettaConversationId: contact.lettaConversationId,
+        });
+        this.#closeSession(contact.agentId);
+        const created = await this.#createLettaConversation(contact);
+        return this.#resumeAndSend(created, message);
+      }
+      if ((isMissingAgent(error) || isUnauthorized(error)) && this.#client) {
+        log.info('cached agent unavailable; searching for a replacement', {
+          agentId: contact.agentId,
+          unauthorized: isUnauthorized(error),
+        });
+        this.#closeSession(contact.agentId);
+        const rebind = await this.#rebindMissingAgent(contact);
+        if (rebind.status === 'rebound') {
+          const created = await this.#createLettaConversation(rebind.contact);
+          return this.#resumeAndSend(created, message);
+        }
+        if (rebind.status === 'present' && isUnauthorized(error)) {
+          log.info(
+            'send unauthorized; agent exists, starting a new conversation',
+            {
+              agentId: contact.agentId,
+            }
+          );
+          const created = await this.#createLettaConversation({
+            ...contact,
+            lettaConversationId: undefined,
+          });
+          return this.#resumeAndSend(created, message);
+        }
+        if (rebind.status === 'missing') {
+          throw new Error('404 Agent not found');
+        }
       }
       throw error;
     }
+  }
+
+  #closeSession(agentId: string): void {
+    const session = this.#sessions.get(agentId);
+    if (!session) {
+      return;
+    }
+    try {
+      session.close();
+    } catch {
+      // The stale session may already be closed.
+    }
+    this.#sessions.delete(agentId);
+  }
+
+  async #createLettaConversation(contact: AgentContact): Promise<AgentContact> {
+    if (!this.#client) {
+      throw new Error('Letta session is not available');
+    }
+    try {
+      return await this.#createConversationUnchecked(contact);
+    } catch (error) {
+      if (!isMissingAgent(error) && !isUnauthorized(error)) {
+        throw error;
+      }
+      const rebind = await this.#rebindMissingAgent(contact);
+      if (rebind.status === 'rebound') {
+        return this.#createConversationUnchecked(rebind.contact);
+      }
+      if (rebind.status === 'missing') {
+        throw new Error('404 Agent not found');
+      }
+      throw error;
+    }
+  }
+
+  async #createConversationUnchecked(
+    contact: AgentContact
+  ): Promise<AgentContact> {
+    if (!this.#client) {
+      throw new Error('Letta session is not available');
+    }
+    const created = await this.#client.conversations.create({
+      agentId: contact.agentId,
+    });
+    const updated = {
+      ...contact,
+      lettaConversationId: created.id,
+    };
+    this.#contacts.set(contact.conversationId, updated);
+    await this.#persistContacts();
+    log.info('Signal conversation linked to Letta conversation', {
+      agentId: updated.agentId,
+      lettaConversationId: created.id,
+    });
+    return updated;
+  }
+
+  async #resumeAndSend(
+    contact: AgentContact,
+    message: SendMessage
+  ): Promise<LettaCodeSession> {
+    if (!this.#client || !contact.lettaConversationId) {
+      throw new Error('Letta session is not available');
+    }
+    this.#closeSession(contact.agentId);
+    const next = this.#client.resumeSession(
+      contact.lettaConversationId,
+      this.#sessionOptions()
+    );
+    this.#sessions.set(contact.agentId, next);
+    await this.#readySession(next);
+    await next.send(message);
+    return next;
+  }
+
+  async #rebindMissingAgent(contact: AgentContact): Promise<AgentRebind> {
+    if (!this.#directoryClient) {
+      return { status: 'unknown' };
+    }
+
+    try {
+      await this.#directoryClient.agents.retrieve(contact.agentId);
+      return { status: 'present' };
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        log.info('agent retrieve unauthorized; searching by name', {
+          agentId: contact.agentId,
+        });
+      } else if (!isMissingAgent(error)) {
+        log.warn('agent retrieve failed while rebinding', formatError(error));
+        return { status: 'unknown' };
+      }
+    }
+
+    const name = baseAgentName(contact.name);
+    const found = new Map<string, AgentSummary>();
+    const add = (agents: Array<AgentSummary>) => {
+      for (const agent of this.#chooseAgentContacts(agents)) {
+        if (agent.id !== contact.agentId) {
+          found.set(agent.id, agent);
+        }
+      }
+    };
+
+    try {
+      add(
+        await this.#directoryClient.agents.list({
+          name,
+          limit: 20,
+          order: 'desc',
+          orderBy: 'createdAt',
+        })
+      );
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        throw error;
+      }
+      log.warn('agent name lookup failed while rebinding', formatError(error));
+    }
+
+    if (found.size === 0) {
+      try {
+        add(
+          await this.#directoryClient.agents.list({
+            query: name,
+            limit: 20,
+            order: 'desc',
+            orderBy: 'createdAt',
+          })
+        );
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          throw error;
+        }
+        log.warn(
+          'agent query lookup failed while rebinding',
+          formatError(error)
+        );
+      }
+    }
+
+    const candidates = [...found.values()];
+    const live =
+      candidates.find(agent => (agent.name?.trim() ?? '') === name) ??
+      candidates[0];
+    log.info('agent replacement search', {
+      agentId: contact.agentId,
+      name,
+      candidateCount: candidates.length,
+    });
+    if (!live) {
+      log.info('agent missing and no replacement found', {
+        agentId: contact.agentId,
+        name,
+      });
+      return { status: 'missing' };
+    }
+
+    log.info('rebinding contact to replacement agent', {
+      fromAgentId: contact.agentId,
+      toAgentId: live.id,
+      name,
+    });
+
+    this.#closeSession(contact.agentId);
+    const conversation = window.ConversationController.get(
+      contact.conversationId
+    );
+    if (conversation) {
+      const serviceId = aciForAgent(live.id);
+      if (conversation.getServiceId() !== serviceId) {
+        conversation.updateServiceId(serviceId);
+        conversation.updateE164(undefined);
+        drop(DataWriter.updateConversation(conversation.attributes));
+      }
+    }
+
+    const updated = {
+      ...contact,
+      agentId: live.id,
+      lettaConversationId: undefined,
+    };
+    this.#contacts.set(contact.conversationId, updated);
+    await this.#persistContacts();
+    this.#queueAvatarLoad(live.id, contact.conversationId);
+    return { status: 'rebound', contact: updated };
   }
 
   async #injectIncoming(
@@ -1621,7 +2062,7 @@ class LettaService {
     const message =
       typeof error === 'string' && error.startsWith('Message not sent.')
         ? error
-        : visibleSendError(error);
+        : this.#visibleSendError(error);
     model.set({
       errors: [
         {
@@ -1632,6 +2073,10 @@ class LettaService {
     });
     this.#stampSendState(model, SendStatus.Failed);
     this.#showSendError(message);
+  }
+
+  #visibleSendError(error?: unknown): string {
+    return visibleSendError(error, this.#directoryStatus === 'ready');
   }
 
   #showSendError(message: string): void {

@@ -615,6 +615,20 @@
   }
 }
 
+.PreferencesLettaAccount {
+  padding-block: 12px;
+  padding-inline: 24px;
+
+  &__title {
+    @include mixins.font-body-1-bold;
+    margin-bottom: 4px;
+  }
+
+  &__actions {
+    margin-top: 16px;
+  }
+}
+
 .Preferences__LanguageIcon {
   @include mixins.color-svg(
     '../images/icons/v3/globe/globe.svg',
