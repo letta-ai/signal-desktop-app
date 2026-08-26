@@ -98,7 +98,7 @@ export function isLettaAuthStatus(value: unknown): value is LettaAuthStatus {
 // Whisper emits the payload as the first argument. IPC listeners receive
 // (event, payload). Accept either shape so sign-in status cannot get stuck.
 export function readLettaAuthStatus(
-  ...args: unknown[]
+  ...args: Array<unknown>
 ): LettaAuthStatus | undefined {
   for (const arg of args) {
     if (isLettaAuthStatus(arg)) {

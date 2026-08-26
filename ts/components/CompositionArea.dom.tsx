@@ -878,13 +878,13 @@ export const CompositionArea = memo(function CompositionArea({
             )}
             {!LETTA_MODE &&
               (conversationType === 'group' || isPollSend1to1Enabled) && (
-              <AxoDropdownMenu.Item
-                symbol="poll"
-                onSelect={handleOpenPollModal}
-              >
-                {i18n('icu:CompositionArea__AttachMenu__Poll')}
-              </AxoDropdownMenu.Item>
-            )}
+                <AxoDropdownMenu.Item
+                  symbol="poll"
+                  onSelect={handleOpenPollModal}
+                >
+                  {i18n('icu:CompositionArea__AttachMenu__Poll')}
+                </AxoDropdownMenu.Item>
+              )}
           </AxoDropdownMenu.Content>
         </AxoDropdownMenu.Root>
       </div>

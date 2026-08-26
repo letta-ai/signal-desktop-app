@@ -9,6 +9,11 @@
 import { createHash } from 'node:crypto';
 import { v5 as uuidv5 } from 'uuid';
 import {
+  aciForAgent,
+  legacyAddressForAgent,
+  matchDirectoryAgent,
+} from '../util/lettaAgentMapping.std.ts';
+import {
   LettaAgentClient,
   CloudManagedSandboxExpiredError,
   createTranscriptAccumulator,
@@ -225,17 +230,6 @@ function bodyRangesEqual(
   return JSON.stringify(left ?? []) === JSON.stringify(right);
 }
 
-function legacyAddressForAgent(agentId: string): string {
-  return uuidv5(agentId, LETTA_ACI_NAMESPACE);
-}
-
-function aciForAgent(agentId: string): AciString {
-  const uuid = legacyAddressForAgent(agentId);
-  // Signal accepts v4 and v7 service IDs. UUID v5 gives us stable hashing, so
-  // preserve its bits and mark the result as v4 for the local synthetic ACI.
-  return `${uuid.slice(0, 14)}4${uuid.slice(15)}` as AciString;
-}
-
 function signalMessageIdForRemote(remoteMessageId: string): string {
   const uuid = uuidv5(remoteMessageId, LETTA_ACI_NAMESPACE);
   return `${uuid.slice(0, 14)}4${uuid.slice(15)}`;
@@ -351,6 +345,10 @@ class LettaService {
       status: this.#directoryStatus,
       error: this.#initError,
     };
+  }
+
+  getMappedConversationIds(): Set<string> {
+    return new Set(this.#contacts.keys());
   }
 
   async retryInitialize(): Promise<void> {
@@ -788,7 +786,132 @@ class LettaService {
       }
     }
     log.info('searchAgents', { query: trimmed, count: conversationIds.length });
+    emitLettaAgentsChanged();
     return conversationIds;
+  }
+
+  async #resolveSendContact(
+    conversationId: string
+  ): Promise<AgentContact | undefined> {
+    const existing = this.#contacts.get(conversationId);
+    if (existing) {
+      return existing;
+    }
+    const conversation = window.ConversationController.get(conversationId);
+    if (!conversation || !this.#directoryClient) {
+      return undefined;
+    }
+
+    const serviceId = conversation.getServiceId();
+    for (const contact of this.#contacts.values()) {
+      if (
+        aciForAgent(contact.agentId) === serviceId ||
+        legacyAddressForAgent(contact.agentId) === serviceId
+      ) {
+        if (contact.conversationId === conversationId) {
+          return contact;
+        }
+        log.info('send contact recovered from mapped agent identity');
+        return this.#bindConversationToAgent(conversationId, {
+          id: contact.agentId,
+          name: contact.name,
+        });
+      }
+    }
+
+    const query = baseAgentName(conversation.getTitle());
+    const candidates = [
+      ...[...this.#contacts.values()].map(contact => ({
+        id: contact.agentId,
+        name: contact.name,
+      })),
+      ...(query ? await this.#listDirectoryAgentsForName(query) : []),
+    ];
+    const matched = matchDirectoryAgent({
+      serviceId,
+      conversationName: conversation.getTitle(),
+      agents: candidates,
+    });
+    if (!matched) {
+      log.info('send contact recovery found no directory agent', {
+        directoryStatus: this.#directoryStatus,
+        mappedCount: this.#contacts.size,
+      });
+      return undefined;
+    }
+
+    log.info('send contact recovered by unique directory name');
+    return this.#bindConversationToAgent(conversationId, matched);
+  }
+
+  async #listDirectoryAgentsForName(
+    name: string
+  ): Promise<Array<AgentSummary>> {
+    if (!this.#directoryClient) {
+      return [];
+    }
+    const found = new Map<string, AgentSummary>();
+    const add = (agents: Array<AgentSummary>) => {
+      for (const agent of agents) {
+        if (agent.hidden === true || !agent.id) {
+          continue;
+        }
+        found.set(agent.id, agent);
+      }
+    };
+    try {
+      add(
+        await this.#directoryClient.agents.list({
+          name,
+          limit: 20,
+          order: 'desc',
+          orderBy: 'createdAt',
+        })
+      );
+    } catch (error) {
+      log.warn('directory name lookup failed', formatError(error));
+    }
+    try {
+      add(
+        await this.#directoryClient.agents.list({
+          query: name,
+          limit: 20,
+          order: 'desc',
+          orderBy: 'createdAt',
+        })
+      );
+    } catch (error) {
+      log.warn('directory query lookup failed', formatError(error));
+    }
+    return [...found.values()];
+  }
+
+  async #bindConversationToAgent(
+    conversationId: string,
+    agent: { id: string; name?: string | null }
+  ): Promise<AgentContact> {
+    const conversation = window.ConversationController.get(conversationId);
+    const serviceId = aciForAgent(agent.id);
+    if (conversation && conversation.getServiceId() !== serviceId) {
+      conversation.updateServiceId(serviceId);
+      conversation.updateE164(undefined);
+      drop(DataWriter.updateConversation(conversation.attributes));
+    }
+
+    const existing = [...this.#contacts.values()].find(
+      contact => contact.agentId === agent.id
+    );
+    const bound: AgentContact = {
+      agentId: agent.id,
+      name: existing?.name ?? displayName(agent, new Set()),
+      conversationId,
+      lettaConversationId: undefined,
+    };
+    this.#closeSession(agent.id);
+    this.#contacts.set(conversationId, bound);
+    await this.#persistContacts();
+    emitLettaAgentsChanged();
+    return bound;
   }
 
   async #ensureContact(
@@ -1385,13 +1508,19 @@ class LettaService {
     this.#startWorking(conversationId);
     try {
       await this.initialize();
-      let contact = this.#contacts.get(conversationId);
+      let contact = await this.#resolveSendContact(conversationId);
       if (!contact || !this.#client) {
         const error = new Error(
           !this.#client
             ? 'Letta authentication required'
             : '404 Agent not found'
         );
+        log.warn('send contact missing after recovery', {
+          conversationId,
+          directoryStatus: this.#directoryStatus,
+          mappedCount: this.#contacts.size,
+          hasClient: Boolean(this.#client),
+        });
         if (outgoingModel) {
           this.#markOutgoingFailed(outgoingModel, error);
         } else {
@@ -1632,7 +1761,7 @@ class LettaService {
     }
     try {
       await this.initialize();
-      const contact = this.#contacts.get(conversationId);
+      const contact = await this.#resolveSendContact(conversationId);
       if (!contact || !this.#client) {
         return;
       }

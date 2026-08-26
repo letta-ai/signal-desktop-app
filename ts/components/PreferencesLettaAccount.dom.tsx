@@ -105,20 +105,21 @@ export function PreferencesLettaAccount(): JSX.Element {
 
   const onSignIn = useCallback(() => {
     setError(undefined);
-    void window.IPC.startLettaLogin()
-      .then(next => {
-        const parsed = readLettaAuthStatus(next);
+    const run = async () => {
+      try {
+        const parsed = readLettaAuthStatus(await window.IPC.startLettaLogin());
         if (parsed) {
           setStatus(parsed);
         }
-      })
-      .catch(signInError => {
+      } catch (signInError) {
         setError(
           signInError instanceof Error
             ? signInError.message
             : 'Could not start Letta sign in.'
         );
-      });
+      }
+    };
+    void run();
   }, []);
 
   const onLogout = useCallback(async () => {

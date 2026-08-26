@@ -289,9 +289,7 @@ export function TypingBubble({
   );
   const isSomeoneTyping = useMemo(
     () =>
-      LETTA_MODE
-        ? Boolean(lettaWorkingStatus)
-        : typingContactIds.length > 0,
+      LETTA_MODE ? Boolean(lettaWorkingStatus) : typingContactIds.length > 0,
     [lettaWorkingStatus, typingContactIds]
   );
 

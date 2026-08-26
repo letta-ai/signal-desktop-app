@@ -105,7 +105,7 @@ export function formatLettaWorkingLine(
   if (description) {
     return `${name} is ${uncapitalize(description)}`;
   }
-  return `${name} is using ${tool.toolName}`;
+  return `${name} is using ${formatLettaToolStatus(tool)}`;
 }
 
 export function formatLettaQuotedSend(
@@ -127,12 +127,9 @@ export function formatLettaReactionSend(
   targetText?: string
 ): string {
   const snippet = (targetText ?? '').trim();
-  const clipped =
-    snippet.length > 280 ? `${snippet.slice(0, 279)}…` : snippet;
+  const clipped = snippet.length > 280 ? `${snippet.slice(0, 279)}…` : snippet;
   if (remove) {
-    return clipped
-      ? `Removed ${emoji} from: "${clipped}"`
-      : `Removed ${emoji}`;
+    return clipped ? `Removed ${emoji} from: "${clipped}"` : `Removed ${emoji}`;
   }
   return clipped ? `Reacted ${emoji} to: "${clipped}"` : `Reacted ${emoji}`;
 }

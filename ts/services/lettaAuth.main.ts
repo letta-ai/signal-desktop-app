@@ -471,11 +471,15 @@ async function startLogin(): Promise<LettaAuthStatus> {
     controller
   );
   loginPromise = pending;
-  void pending.finally(() => {
-    if (loginPromise === pending) {
-      loginPromise = undefined;
+  void (async () => {
+    try {
+      await pending;
+    } finally {
+      if (loginPromise === pending) {
+        loginPromise = undefined;
+      }
     }
-  });
+  })();
   return status;
 }
 

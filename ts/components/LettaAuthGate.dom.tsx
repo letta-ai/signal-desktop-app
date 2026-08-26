@@ -82,19 +82,19 @@ export function LettaAuthGate({
 
   const onSignIn = useCallback(() => {
     setStarting(true);
-    void window.IPC.startLettaLogin()
-      .then(next => {
-        const parsed = readLettaAuthStatus(next);
+    const run = async () => {
+      try {
+        const parsed = readLettaAuthStatus(await window.IPC.startLettaLogin());
         if (parsed) {
           setStatus(parsed);
         }
-      })
-      .catch(() => {
+      } catch {
         // Recoverable errors are reported through auth status.
-      })
-      .finally(() => {
+      } finally {
         setStarting(false);
-      });
+      }
+    };
+    void run();
   }, []);
 
   const onCancel = useCallback(() => {

@@ -337,9 +337,7 @@ export function TimelineMessage(props: Props): JSX.Element {
           }
           onReplyToMessage={handleReplyToMessage}
           onReact={handleReact}
-          onEndPoll={
-            !LETTA_MODE && canEndPoll ? () => endPoll(id) : null
-          }
+          onEndPoll={!LETTA_MODE && canEndPoll ? () => endPoll(id) : null}
           onRetryMessageSend={canRetry ? () => retryMessageSend(id) : null}
           onRetryDeleteForEveryone={
             canRetryDeleteForEveryone ? () => retryDeleteForEveryone(id) : null

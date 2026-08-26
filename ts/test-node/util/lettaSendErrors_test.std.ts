@@ -37,6 +37,13 @@ describe('lettaSendErrors', () => {
     assert.equal(baseAgentName('Overlord'), 'Overlord');
   });
 
+  it('does not treat a missing local mapping as a foreign-account 401', () => {
+    const missing = new Error('404 Agent not found');
+    assert.isTrue(isMissingAgent(missing));
+    assert.isFalse(isForeignLettaChat(missing, true));
+    assert.isFalse(isUnauthorized(missing));
+  });
+
   it('treats 401 as a foreign chat when the agent directory already loaded', () => {
     const error = new Error('401 Unauthorized');
     assert.isTrue(isUnauthorized(error));

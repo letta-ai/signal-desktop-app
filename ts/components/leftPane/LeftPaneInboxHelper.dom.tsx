@@ -192,11 +192,7 @@ export class LeftPaneInboxHelper extends LeftPaneHelper<LeftPaneInboxPropsType> 
       }
 
       if (LETTA_MODE) {
-        return (
-          <LettaEmptyInbox
-            startComposing={startComposing}
-          />
-        );
+        return <LettaEmptyInbox startComposing={startComposing} />;
       }
 
       return (

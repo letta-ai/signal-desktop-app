@@ -35,6 +35,8 @@ import type { PropsDataType as TimelinePropsType } from '../../components/conver
 import { assertDev } from '../../util/assert.std.ts';
 import { isConversationUnregistered } from '../../util/isConversationUnregistered.dom.ts';
 import { filterAndSortConversations } from '../../util/filterAndSortConversations.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
+import { filterMappedLettaConversations } from '../../util/lettaAgentMapping.std.ts';
 import type { ContactNameColorType } from '../../types/Colors.std.ts';
 import { ContactNameColors } from '../../types/Colors.std.ts';
 import type { AvatarDataType } from '../../types/Avatar.std.ts';
@@ -932,7 +934,14 @@ export const getFilteredComposeContacts = createSelector(
     contacts: ReadonlyArray<ConversationType>,
     regionCode: string | undefined
   ): Array<ConversationType> => {
-    return filterAndSortConversations(contacts, searchTerm, regionCode);
+    const sorted = filterAndSortConversations(contacts, searchTerm, regionCode);
+    if (!LETTA_MODE) {
+      return sorted;
+    }
+    return filterMappedLettaConversations(
+      sorted,
+      window.lettaService?.getMappedConversationIds()
+    );
   }
 );
 
