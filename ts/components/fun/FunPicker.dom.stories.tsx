@@ -62,6 +62,7 @@ export default {
   component: Template,
   args: {
     isReply: false,
+    emojiOnly: false,
     placement: 'bottom',
     theme: undefined,
     onSelectEmoji: action('onSelectEmoji'),

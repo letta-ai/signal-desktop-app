@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import lodash from 'lodash';
-import type { ReactNode, JSX } from 'react';
+import { useEffect, useState, type ReactNode, type JSX } from 'react';
 
 import type { ToFindType } from './LeftPaneHelper.dom.tsx';
 import type {
@@ -22,6 +22,7 @@ import { ChatFolderType } from '../../types/ChatFolder.std.ts';
 import { AxoButton } from '../../axo/AxoButton.dom.tsx';
 import { NavTab, SettingsPage, type Location } from '../../types/Nav.std.ts';
 import { tw } from '../../axo/tw.dom.tsx';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 
 const { last } = lodash;
 
@@ -152,11 +153,13 @@ export class LeftPaneInboxHelper extends LeftPaneHelper<LeftPaneInboxPropsType> 
     selectedChatFolder,
     changeLocation,
     selectedLocation,
+    startComposing,
   }: Readonly<{
     i18n: LocalizerType;
     selectedChatFolder: ChatFolder | null;
     changeLocation: (location: Location) => void;
     selectedLocation: Location | undefined;
+    startComposing?: () => void;
   }>): ReactNode | null {
     if (this.getRowCount() === 0) {
       if (selectedChatFolder?.folderType === ChatFolderType.CUSTOM) {
@@ -186,6 +189,10 @@ export class LeftPaneInboxHelper extends LeftPaneHelper<LeftPaneInboxPropsType> 
             </AxoButton.Root>
           </EmptyView>
         );
+      }
+
+      if (LETTA_MODE) {
+        return <LettaEmptyInbox startComposing={startComposing} />;
       }
 
       return (
@@ -360,6 +367,93 @@ export class LeftPaneInboxHelper extends LeftPaneHelper<LeftPaneInboxPropsType> 
   #hasNotPinned(): boolean {
     return this.#conversations.length !== 0;
   }
+}
+
+function LettaEmptyInbox({
+  startComposing,
+}: {
+  startComposing?: () => void;
+}): JSX.Element {
+  const [directory, setDirectory] = useState(
+    () =>
+      window.lettaService?.getDirectoryState() ?? {
+        status: 'loading' as const,
+      }
+  );
+  const [retrying, setRetrying] = useState(false);
+
+  useEffect(() => {
+    const refresh = () => {
+      setDirectory(
+        window.lettaService?.getDirectoryState() ?? { status: 'loading' }
+      );
+    };
+    refresh();
+    window.Whisper.events.on('letta-agents-changed', refresh);
+    return () => {
+      window.Whisper.events.off('letta-agents-changed', refresh);
+    };
+  }, []);
+
+  const onRetry = async () => {
+    setRetrying(true);
+    try {
+      await window.lettaService?.retryInitialize();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  if (directory.status === 'loading' || directory.status === 'idle') {
+    return (
+      <EmptyView>
+        <h3 className={tw('type-title-medium text-secondary')}>
+          Loading agents…
+        </h3>
+      </EmptyView>
+    );
+  }
+
+  if (directory.status === 'error') {
+    return (
+      <EmptyView>
+        <h3 className={tw('type-title-medium text-secondary')}>
+          Couldn’t load agents
+        </h3>
+        <p className={tw('type-body-medium text-secondary')}>
+          {directory.error ?? 'Try again to load your Letta agents.'}
+        </p>
+        <AxoButton.Root
+          variant="elevated-secondary"
+          size="md"
+          pending={retrying}
+          onClick={onRetry}
+        >
+          Try again
+        </AxoButton.Root>
+      </EmptyView>
+    );
+  }
+
+  return (
+    <EmptyView>
+      <h3 className={tw('type-title-medium text-secondary')}>
+        Start a chat with an agent
+      </h3>
+      <p className={tw('type-body-medium text-secondary')}>
+        Agents appear here after you message them. Open New chat to pick one.
+      </p>
+      {startComposing ? (
+        <AxoButton.Root
+          variant="elevated-secondary"
+          size="md"
+          onClick={startComposing}
+        >
+          New chat
+        </AxoButton.Root>
+      ) : null}
+    </EmptyView>
+  );
 }
 
 function EmptyView(props: { children: ReactNode }) {

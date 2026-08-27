@@ -3,11 +3,21 @@
 
 import { assert } from 'chai';
 
-import { isLettaAuthStatus } from '../../types/LettaAuth.std.ts';
+import {
+  isLettaAuthStatus,
+  isLettaCredentialCheck,
+  readLettaAuthStatus,
+} from '../../types/LettaAuth.std.ts';
 
 describe('Letta auth status validation', () => {
   it('accepts sanitized signed-in and authorizing states', () => {
     assert.isTrue(isLettaAuthStatus({ state: 'signed-in', source: 'oauth' }));
+    assert.isTrue(
+      isLettaAuthStatus({
+        state: 'signed-out',
+        secureStorageAvailable: true,
+      })
+    );
     assert.isTrue(
       isLettaAuthStatus({
         state: 'authorizing',
@@ -42,5 +52,32 @@ describe('Letta auth status validation', () => {
         message: 'offline',
       })
     );
+  });
+
+  it('reads auth status from Whisper or IPC argument shapes', () => {
+    const signedOut = {
+      state: 'signed-out' as const,
+      secureStorageAvailable: true,
+    };
+    assert.deepEqual(readLettaAuthStatus(signedOut), signedOut);
+    assert.deepEqual(
+      readLettaAuthStatus({ type: 'event' }, signedOut),
+      signedOut
+    );
+    assert.isUndefined(readLettaAuthStatus({ type: 'event' }));
+  });
+});
+
+describe('Letta credential check validation', () => {
+  it('accepts known check states', () => {
+    assert.isTrue(isLettaCredentialCheck({ state: 'ok' }));
+    assert.isTrue(isLettaCredentialCheck({ state: 'invalid' }));
+    assert.isTrue(isLettaCredentialCheck({ state: 'unreachable' }));
+    assert.isTrue(isLettaCredentialCheck({ state: 'signed-out' }));
+  });
+
+  it('rejects unknown check states', () => {
+    assert.isFalse(isLettaCredentialCheck({ state: 'signed-in' }));
+    assert.isFalse(isLettaCredentialCheck({}));
   });
 });

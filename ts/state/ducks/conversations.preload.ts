@@ -446,6 +446,7 @@ export type ConversationType = ReadonlyDeep<
     isSelected?: boolean;
     isFetchingUUID?: boolean;
     typingContactIdTimestamps?: Record<string, number>;
+    lettaWorkingStatus?: string;
     recentMediaItems?: ReadonlyArray<MediaItemType>;
     profileSharing?: boolean;
     sharingPhoneNumber?: boolean;

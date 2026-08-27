@@ -258,6 +258,7 @@ export function getConversation(model: ConversationModel): ConversationType {
     titleNoNickname: getTitle(attributes, { ignoreNickname: true }),
     titleShortNoDefault: getTitle(attributes, { isShort: true }),
     typingContactIdTimestamps,
+    lettaWorkingStatus: model.lettaWorkingStatus,
     searchableTitle: isMe(attributes)
       ? window.SignalContext.i18n('icu:noteToSelf')
       : getTitle(attributes),

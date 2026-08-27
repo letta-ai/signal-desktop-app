@@ -9,6 +9,7 @@ import { createPortal } from 'react-dom';
 import { Manager, Popper, Reference } from 'react-popper';
 import type { PreventOverflowModifier } from '@popperjs/core/lib/modifiers/preventOverflow.js';
 import { isDownloaded } from '../../util/Attachment.std.ts';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
 import type { LocalizerType } from '../../types/I18N.std.ts';
 import { handleOutsideClick } from '../../util/handleOutsideClick.dom.ts';
 import { offsetDistanceModifier } from '../../util/popperUtil.std.ts';
@@ -330,11 +331,13 @@ export function TimelineMessage(props: Props): JSX.Element {
           shouldShowAdditional={shouldShowAdditional}
           onDownload={handleDownload}
           onEdit={
-            canEditMessage ? () => setMessageToEdit(conversationId, id) : null
+            !LETTA_MODE && canEditMessage
+              ? () => setMessageToEdit(conversationId, id)
+              : null
           }
           onReplyToMessage={handleReplyToMessage}
           onReact={handleReact}
-          onEndPoll={canEndPoll ? () => endPoll(id) : null}
+          onEndPoll={!LETTA_MODE && canEndPoll ? () => endPoll(id) : null}
           onRetryMessageSend={canRetry ? () => retryMessageSend(id) : null}
           onRetryDeleteForEveryone={
             canRetryDeleteForEveryone ? () => retryDeleteForEveryone(id) : null

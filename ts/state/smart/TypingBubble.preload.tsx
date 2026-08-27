@@ -57,6 +57,7 @@ export const SmartTypingBubble = memo(function SmartTypingBubble({
       conversationId={conversationId}
       conversationType={conversation.type}
       typingContactIdTimestamps={typingContactIdTimestamps}
+      lettaWorkingStatus={conversation.lettaWorkingStatus}
       lastItemAuthorId={lastItemAuthorId}
       lastItemTimestamp={lastItemTimestamp}
       i18n={i18n}

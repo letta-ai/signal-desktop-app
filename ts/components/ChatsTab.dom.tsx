@@ -9,6 +9,7 @@ import { WhatsNewLink } from './WhatsNewLink.dom.tsx';
 import type { UnreadStats } from '../util/countUnreadStats.std.ts';
 import type { SmartConversationViewProps } from '../state/smart/ConversationView.preload.tsx';
 import { tw } from '../axo/tw.dom.tsx';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 
 export type ChatsTabProps = Readonly<{
   otherTabsUnreadStats: UnreadStats;
@@ -39,6 +40,13 @@ export function ChatsTab({
   selectedConversationId,
   showWhatsNewModal,
 }: ChatsTabProps): JSX.Element {
+  let welcome = i18n('icu:welcomeToSignal');
+  if (LETTA_MODE) {
+    welcome = 'THIS IS SIGNAL LETTA';
+  } else if (isStaging) {
+    welcome = 'THIS IS A STAGING DESKTOP';
+  }
+
   return (
     <>
       <div id="LeftPane">
@@ -65,13 +73,16 @@ export function ChatsTab({
           <div className="Inbox__no-conversation-open">
             {renderMiniPlayer({ shouldFlow: false })}
             <div className="module-splash-screen__logo module-splash-screen__logo--96" />
-            <h3 className="Inbox__welcome">
-              {isStaging
-                ? 'THIS IS A STAGING DESKTOP'
-                : i18n('icu:welcomeToSignal')}
-            </h3>
+            <h3 className="Inbox__welcome">{welcome}</h3>
             <p className="Inbox__whatsnew">
-              <WhatsNewLink i18n={i18n} showWhatsNewModal={showWhatsNewModal} />
+              {LETTA_MODE ? (
+                'Chat with your Letta agents in Signal'
+              ) : (
+                <WhatsNewLink
+                  i18n={i18n}
+                  showWhatsNewModal={showWhatsNewModal}
+                />
+              )}
             </p>
             <div className="Inbox__padding" />
             <div className={tw('absolute bottom-0 p-5 text-secondary')}>

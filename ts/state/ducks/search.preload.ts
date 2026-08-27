@@ -45,6 +45,7 @@ import {
 import { removeDiacritics } from '../../util/removeDiacritics.std.ts';
 import { createLogger } from '../../logging/log.std.ts';
 import { LETTA_MODE } from '../../util/lettaMode.std.ts';
+import { filterMappedLettaConversations } from '../../util/lettaAgentMapping.std.ts';
 import { searchConversationTitles } from '../../util/searchConversationTitles.std.ts';
 import { isDirectConversation } from '../../util/whatTypeOfConversation.dom.ts';
 import { isConversationSMSOnly } from '../../util/isConversationSMSOnly.std.ts';
@@ -456,8 +457,15 @@ const doSearch = debounce(
       const queryWords = [...segmenter.segment(query)]
         .filter(word => word.isWordLike)
         .map(word => word.segment);
-      const contactServiceIdsMatchingQuery = searchConversationTitles(
+      const mappedIds = LETTA_MODE
+        ? window.lettaService?.getMappedConversationIds()
+        : undefined;
+      const conversationsForMessageSearch = filterMappedLettaConversations(
         allConversations,
+        mappedIds
+      );
+      const contactServiceIdsMatchingQuery = searchConversationTitles(
+        conversationsForMessageSearch,
         queryWords
       )
         .filter(conversation => isDirectConversation(conversation))
@@ -465,11 +473,25 @@ const doSearch = debounce(
         .filter(isNotNil)
         .slice(0, MAX_MATCHING_CONTACTS);
 
-      const messages = await queryMessages({
+      let messages = await queryMessages({
         query,
         searchConversationId,
         contactServiceIdsMatchingQuery,
       });
+      if (mappedIds && !searchConversationId) {
+        const unfilteredCount = messages.length;
+        messages = messages.filter(message =>
+          Boolean(
+            message.conversationId && mappedIds.has(message.conversationId)
+          )
+        );
+        if (messages.length !== unfilteredCount) {
+          log.info('letta search omitted messages from unmapped local chats', {
+            omitted: unfilteredCount - messages.length,
+            mappedCount: mappedIds.size,
+          });
+        }
+      }
 
       dispatch({
         type: 'SEARCH_MESSAGES_RESULTS_FULFILLED',
@@ -650,8 +672,26 @@ async function queryConversationsAndContacts(
     return !messagesDeleted;
   });
 
+  const mappedIds = LETTA_MODE
+    ? window.lettaService?.getMappedConversationIds()
+    : undefined;
+  const searchableConversations = filterMappedLettaConversations(
+    visibleConversations,
+    mappedIds
+  );
+  if (mappedIds) {
+    const omitted =
+      visibleConversations.length - searchableConversations.length;
+    if (omitted > 0) {
+      log.info('letta search omitted unmapped local chats', {
+        omitted,
+        mappedCount: mappedIds.size,
+      });
+    }
+  }
+
   const searchResults: Array<ConversationType> = LETTA_MODE
-    ? visibleConversations
+    ? searchableConversations
         .filter(conversation => {
           const values = [
             conversation.title,

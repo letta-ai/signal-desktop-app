@@ -7,6 +7,8 @@ import type { ShowToastAction } from '../../state/ducks/toast.preload.ts';
 import type { AttachmentDraftType } from '../../types/Attachment.std.ts';
 import type { LocalizerType } from '../../types/Util.std.ts';
 import { ToastType } from '../../types/Toast.dom.tsx';
+import { LETTA_MODE } from '../../util/lettaMode.std.ts';
+import { NavTab, SettingsPage } from '../../types/Nav.std.ts';
 import {
   useStartRecordingShortcut,
   useKeyboardShortcuts,
@@ -38,11 +40,53 @@ export function AudioCapture({
   useKeyboardShortcuts(startRecordingShortcut);
 
   const handleClick = useCallback(() => {
-    if (draftAttachments.length) {
-      showToast({ toastType: ToastType.VoiceNoteMustBeTheOnlyAttachment });
-    } else {
-      startRecording(conversationId);
+    const record = () => {
+      if (draftAttachments.length) {
+        showToast({ toastType: ToastType.VoiceNoteMustBeTheOnlyAttachment });
+      } else {
+        startRecording(conversationId);
+      }
+    };
+    if (!LETTA_MODE) {
+      record();
+      return;
     }
+    void (async () => {
+      try {
+        const config = await window.IPC.getLettaTranscriptionConfig();
+        const selected = config.providers.find(
+          provider => provider.id === config.provider
+        );
+        if (!config.secureStorageAvailable || !selected?.configured) {
+          showToast({
+            toastType: ToastType.LettaSendError,
+            parameters: {
+              message:
+                'Add a key for the selected transcription service in Settings before sending a voice memo.',
+            },
+          });
+          window.reduxActions.nav.changeLocation({
+            tab: NavTab.Settings,
+            details: { page: SettingsPage.Transcription },
+          });
+          return;
+        }
+      } catch {
+        showToast({
+          toastType: ToastType.LettaSendError,
+          parameters: {
+            message:
+              'Add a key for the selected transcription service in Settings before sending a voice memo.',
+          },
+        });
+        window.reduxActions.nav.changeLocation({
+          tab: NavTab.Settings,
+          details: { page: SettingsPage.Transcription },
+        });
+        return;
+      }
+      record();
+    })();
   }, [conversationId, draftAttachments, showToast, startRecording]);
 
   const handleWarmup = useCallback(() => {

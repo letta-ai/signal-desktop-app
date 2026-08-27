@@ -26,6 +26,7 @@ export type PropsType = {
     flags: number | null;
   }) => unknown;
   acceptMediaOnly?: boolean;
+  acceptImagesOnly?: boolean;
   testId?: string;
 };
 
@@ -36,6 +37,7 @@ export const CompositionUpload = forwardRef<HTMLInputElement, PropsType>(
       draftAttachments,
       processAttachments,
       acceptMediaOnly,
+      acceptImagesOnly,
       testId,
     },
     ref
@@ -56,10 +58,25 @@ export const CompositionUpload = forwardRef<HTMLInputElement, PropsType>(
       return isImageAttachment(attachment) || isVideoAttachment(attachment);
     });
 
-    const acceptContentTypes =
-      acceptMediaOnly || anyVideoOrImageAttachments
-        ? [...getSupportedImageTypes(), ...getSupportedVideoTypes()]
-        : null;
+    let acceptContentTypes: Array<string> | null = null;
+    if (acceptImagesOnly) {
+      acceptContentTypes = [
+        'image/png',
+        'image/jpeg',
+        'image/gif',
+        'image/webp',
+        '.png',
+        '.jpg',
+        '.jpeg',
+        '.gif',
+        '.webp',
+      ];
+    } else if (acceptMediaOnly || anyVideoOrImageAttachments) {
+      acceptContentTypes = [
+        ...getSupportedImageTypes(),
+        ...getSupportedVideoTypes(),
+      ];
+    }
 
     return (
       // FIXME

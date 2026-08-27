@@ -948,6 +948,7 @@ export function LeftPane({
               selectedChatFolder,
               selectedLocation,
               changeLocation,
+              startComposing,
             })}
           {!isEmpty && (
             <div className="module-left-pane__list--wrapper">

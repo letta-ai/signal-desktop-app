@@ -88,6 +88,7 @@ import type { PollCreateType } from '../types/Polls.dom.ts';
 import { PollCreateModal } from './PollCreateModal.dom.tsx';
 import { useDocumentKeyDown } from '../hooks/useDocumentKeyDown.dom.ts';
 import { hasDraft } from '../util/hasDraft.std.ts';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 import type { ContactNameColorType } from '../types/Colors.std.ts';
 import type { Emoji } from '../axo/emoji.std.ts';
 import { AxoConfirmDialog } from '../axo/AxoConfirmDialog.dom.tsx';
@@ -794,6 +795,7 @@ export const CompositionArea = memo(function CompositionArea({
       >
         <FunPicker
           isReply={Boolean(quotedMessageId)}
+          emojiOnly={LETTA_MODE}
           placement="top start"
           open={funPickerOpen}
           onOpenChange={handleFunPickerOpenChange}
@@ -865,19 +867,24 @@ export const CompositionArea = memo(function CompositionArea({
           </div>
           <AxoDropdownMenu.Content>
             <AxoDropdownMenu.Item symbol="photo" onSelect={launchMediaPicker}>
-              {i18n('icu:CompositionArea__AttachMenu__PhotosAndVideos')}
+              {LETTA_MODE
+                ? 'Photos'
+                : i18n('icu:CompositionArea__AttachMenu__PhotosAndVideos')}
             </AxoDropdownMenu.Item>
-            <AxoDropdownMenu.Item symbol="file" onSelect={launchFilePicker}>
-              {i18n('icu:CompositionArea__AttachMenu__File')}
-            </AxoDropdownMenu.Item>
-            {(conversationType === 'group' || isPollSend1to1Enabled) && (
-              <AxoDropdownMenu.Item
-                symbol="poll"
-                onSelect={handleOpenPollModal}
-              >
-                {i18n('icu:CompositionArea__AttachMenu__Poll')}
+            {!LETTA_MODE && (
+              <AxoDropdownMenu.Item symbol="file" onSelect={launchFilePicker}>
+                {i18n('icu:CompositionArea__AttachMenu__File')}
               </AxoDropdownMenu.Item>
             )}
+            {!LETTA_MODE &&
+              (conversationType === 'group' || isPollSend1to1Enabled) && (
+                <AxoDropdownMenu.Item
+                  symbol="poll"
+                  onSelect={handleOpenPollModal}
+                >
+                  {i18n('icu:CompositionArea__AttachMenu__Poll')}
+                </AxoDropdownMenu.Item>
+              )}
           </AxoDropdownMenu.Content>
         </AxoDropdownMenu.Root>
       </div>
@@ -1256,7 +1263,9 @@ export const CompositionArea = memo(function CompositionArea({
               attachments={draftAttachments}
               canEditImages
               i18n={i18n}
-              onAddAttachment={launchFilePicker}
+              onAddAttachment={
+                LETTA_MODE ? launchMediaPicker : launchFilePicker
+              }
               onClickAttachment={maybeEditAttachment}
               onClose={() => onClearAttachments(conversationId)}
               onCloseAttachment={attachment => {
@@ -1352,6 +1361,7 @@ export const CompositionArea = memo(function CompositionArea({
         i18n={i18n}
         processAttachments={processAttachments}
         ref={fileInputRef}
+        acceptImagesOnly={LETTA_MODE}
       />
       <CompositionUpload
         conversationId={conversationId}
@@ -1360,6 +1370,7 @@ export const CompositionArea = memo(function CompositionArea({
         processAttachments={processAttachments}
         ref={photoVideoInputRef}
         acceptMediaOnly
+        acceptImagesOnly={LETTA_MODE}
         testId="attachfile-input-media"
       />
       {isPollModalOpen && (

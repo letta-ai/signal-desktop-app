@@ -16,6 +16,7 @@ import { createLogger } from '../logging/log.std.ts';
 import type {
   LettaAuthErrorCode,
   LettaAuthStatus,
+  LettaCredentialCheck,
 } from '../types/LettaAuth.std.ts';
 import { getLettaAuthTimerSegment } from '../util/lettaAuthTimer.std.ts';
 import { LETTA_API_KEY, LETTA_MODE } from '../util/lettaMode.std.ts';
@@ -132,7 +133,8 @@ let credentialVersion = 0;
 let loginAbortController: AbortController | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
 let refreshPromise: Promise<void> | undefined;
-let loginPromise: Promise<LettaAuthStatus> | undefined;
+let loginPromise: Promise<void> | undefined;
+let loginStartPromise: Promise<LettaAuthStatus> | undefined;
 
 // Status plumbing ------------------------------------------------------------
 
@@ -450,8 +452,6 @@ async function startLogin(): Promise<LettaAuthStatus> {
   const controller = new AbortController();
   loginAbortController?.abort();
   loginAbortController = controller;
-  const isCurrentLogin = () =>
-    loginAbortController === controller && !controller.signal.aborted;
 
   setStatus({
     state: 'authorizing',
@@ -464,13 +464,41 @@ async function startLogin(): Promise<LettaAuthStatus> {
   // Fire and forget: the login flow continues while the browser opens.
   void openVerificationUrl(deviceCode.verification_uri_complete);
 
+  const pending = completeAuthorizingLogin(
+    deviceCode.device_code,
+    deviceCode.expires_in,
+    deviceCode.interval,
+    controller
+  );
+  loginPromise = pending;
+  void (async () => {
+    try {
+      await pending;
+    } finally {
+      if (loginPromise === pending) {
+        loginPromise = undefined;
+      }
+    }
+  })();
+  return status;
+}
+
+async function completeAuthorizingLogin(
+  deviceCode: string,
+  expiresInSeconds: number,
+  intervalSeconds: number | undefined,
+  controller: AbortController
+): Promise<void> {
+  const isCurrentLogin = () =>
+    loginAbortController === controller && !controller.signal.aborted;
+
   let tokens;
   try {
-    tokens = await pollForToken(deviceCode.device_code, {
+    tokens = await pollForToken(deviceCode, {
       deviceId: getDeviceId(),
       deviceName: deviceName(),
-      intervalSeconds: deviceCode.interval,
-      expiresInSeconds: deviceCode.expires_in,
+      intervalSeconds,
+      expiresInSeconds,
       signal: controller.signal,
     });
   } catch (error) {
@@ -479,7 +507,7 @@ async function startLogin(): Promise<LettaAuthStatus> {
       loginAbortController = undefined;
     }
     if (!wasCurrent || controller.signal.aborted) {
-      return status;
+      return;
     }
     if (error instanceof LettaOAuthError && error.kind !== 'cancelled') {
       const mapping: Record<
@@ -513,7 +541,7 @@ async function startLogin(): Promise<LettaAuthStatus> {
     } else {
       setStatus(signedOutStatus());
     }
-    return status;
+    return;
   }
 
   // Only trust and persist the new session after the API accepts it. Cancellation
@@ -524,14 +552,14 @@ async function startLogin(): Promise<LettaAuthStatus> {
     if (tokens.refresh_token) {
       await revokeToken(tokens.refresh_token);
     }
-    return status;
+    return;
   }
   if (!validation.ok) {
     if (tokens.refresh_token) {
       await revokeToken(tokens.refresh_token);
     }
     if (!isCurrentLogin()) {
-      return status;
+      return;
     }
     loginAbortController = undefined;
     if (validation.reason === 'invalid') {
@@ -551,7 +579,7 @@ async function startLogin(): Promise<LettaAuthStatus> {
         )
       );
     }
-    return status;
+    return;
   }
 
   try {
@@ -577,27 +605,33 @@ async function startLogin(): Promise<LettaAuthStatus> {
         )
       );
     }
-    return status;
+    return;
   }
 
   loginAbortController = undefined;
   setStatus({ state: 'signed-in', source: 'oauth' });
   scheduleRefresh();
   log.info('Letta OAuth login complete');
-  return status;
 }
 
 async function beginLogin(): Promise<LettaAuthStatus> {
-  if (loginPromise) {
-    return loginPromise;
+  if (
+    status.state === 'signed-in' ||
+    status.state === 'refreshing' ||
+    status.state === 'authorizing'
+  ) {
+    return status;
+  }
+  if (loginStartPromise) {
+    return loginStartPromise;
   }
   const pending = startLogin();
-  loginPromise = pending;
+  loginStartPromise = pending;
   try {
     return await pending;
   } finally {
-    if (loginPromise === pending) {
-      loginPromise = undefined;
+    if (loginStartPromise === pending) {
+      loginStartPromise = undefined;
     }
   }
 }
@@ -605,6 +639,7 @@ async function beginLogin(): Promise<LettaAuthStatus> {
 function cancelLogin(): LettaAuthStatus {
   loginAbortController?.abort();
   loginAbortController = undefined;
+  loginStartPromise = undefined;
   if (status.state === 'authorizing') {
     setStatus(signedOutStatus());
   }
@@ -617,6 +652,7 @@ async function logout(): Promise<LettaAuthStatus> {
   }
   loginAbortController?.abort();
   loginAbortController = undefined;
+  loginStartPromise = undefined;
 
   const refreshToken = credentials?.refreshToken;
   clearCredentials();
@@ -671,6 +707,18 @@ async function getCredential(): Promise<LettaCredential | undefined> {
   return { source: 'oauth', apiKey: credentials.accessToken };
 }
 
+async function checkCredential(): Promise<LettaCredentialCheck> {
+  const cred = await getCredential();
+  if (!cred) {
+    return { state: 'signed-out' };
+  }
+  const result = await validateAccessToken(cred.apiKey);
+  if (result.ok) {
+    return { state: 'ok' };
+  }
+  return { state: result.reason === 'invalid' ? 'invalid' : 'unreachable' };
+}
+
 function getStatus(): LettaAuthStatus {
   return status;
 }
@@ -709,6 +757,7 @@ export function installLettaAuthService(): void {
 
   ipc.handle('letta-auth:get-status', () => getStatus());
   ipc.handle('letta-auth:get-credential', () => getCredential());
+  ipc.handle('letta-auth:check-credential', () => checkCredential());
   ipc.handle('letta-auth:start-login', () => beginLogin());
   ipc.handle('letta-auth:cancel-login', () => cancelLogin());
   ipc.handle('letta-auth:logout', () => logout());

@@ -113,6 +113,7 @@ const IPC: IPCType = {
   getLettaTranscriptionConfig: () =>
     ipc.invoke('letta-transcription:get-config'),
   getLettaAuthStatus: () => ipc.invoke('letta-auth:get-status'),
+  checkLettaCredential: () => ipc.invoke('letta-auth:check-credential'),
   startLettaLogin: () => ipc.invoke('letta-auth:start-login'),
   cancelLettaLogin: () => ipc.invoke('letta-auth:cancel-login'),
   logoutLetta: () => ipc.invoke('letta-auth:logout'),
