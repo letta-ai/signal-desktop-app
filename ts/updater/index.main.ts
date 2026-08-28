@@ -8,6 +8,7 @@ import { MacOSUpdater } from './macos.main.ts';
 import { WindowsUpdater } from './windows.main.ts';
 import { LinuxAppImageUpdater } from './linuxAppImage.main.ts';
 import { initLinux } from './linux.main.ts';
+import { LETTA_MODE } from '../util/lettaMode.std.ts';
 
 let initialized = false;
 
@@ -68,5 +69,6 @@ export function onRestartCanceled(): void {
 }
 
 function autoUpdateDisabled() {
-  return !app.isPackaged || !config.get('updatesEnabled');
+  // Signal Letta has no update channel; keep stock Signal (LETTA_MODE=0) unchanged.
+  return LETTA_MODE || !app.isPackaged || !config.get('updatesEnabled');
 }

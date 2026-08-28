@@ -441,7 +441,7 @@ function LettaEmptyInbox({
         Start a chat with an agent
       </h3>
       <p className={tw('type-body-medium text-secondary')}>
-        Agents appear here after you message them. Open New chat to pick one.
+        Select an agent to chat with to begin.
       </p>
       {startComposing ? (
         <AxoButton.Root
